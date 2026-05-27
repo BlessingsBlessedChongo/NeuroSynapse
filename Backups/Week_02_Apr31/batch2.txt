@@ -1,0 +1,637 @@
+Let's keep building.
+
+---
+
+## Session 2: SSH Client and Telemetry Collection
+
+**Goal:** Django connects to the Mock SSH Server, collects telemetry, and saves it to the database.
+
+Make sure your virtual environment is activated:
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse
+venv\Scripts\activate
+```
+
+---
+
+### Step 1: Create the SSH Client Module
+
+Create this folder structure:
+```
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\management\
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\management\commands\
+```
+
+Create an empty `__init__.py` file in each:
+```
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\management\__init__.py
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\management\commands\__init__.py
+```
+
+(Just create empty files with those names.)
+
+---
+
+### Step 2: Create the SSH Client
+
+Create this file:
+```
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\ssh_client.py
+```
+
+Copy and paste this:
+
+```python
+"""
+SSH Client for connecting to network devices (mock or real).
+Handles telemetry collection and healing command execution.
+"""
+
+import time
+import re
+from netmiko import ConnectHandler
+from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
+
+
+class NetworkDeviceConnector:
+    """Connects to a network device via SSH and executes commands."""
+    
+    def __init__(self, host, port=22, username='admin', password='admin',
+                 device_type='cisco_ios', timeout=15):
+        self.device_config = {
+            'device_type': device_type,
+            'host': host,
+            'port': port,
+            'username': username,
+            'password': password,
+            'timeout': timeout,
+            'session_log': 'ssh_session.log',
+        }
+        self.connection = None
+        self.host = host
+    
+    def connect(self):
+        """Establish SSH connection to the device."""
+        try:
+            print(f"[SSH] Connecting to {self.host}:{self.device_config['port']}...")
+            self.connection = ConnectHandler(**self.device_config)
+            print(f"[SSH] Connected to {self.host}")
+            return True
+        except NetmikoTimeoutException:
+            print(f"[SSH] TIMEOUT: {self.host} did not respond")
+            return False
+        except NetmikoAuthenticationException:
+            print(f"[SSH] AUTH FAILED: Check username/password for {self.host}")
+            return False
+        except Exception as e:
+            print(f"[SSH] Connection failed: {e}")
+            return False
+    
+    def disconnect(self):
+        """Close the SSH connection."""
+        if self.connection:
+            try:
+                self.connection.disconnect()
+                print(f"[SSH] Disconnected from {self.host}")
+            except:
+                pass
+            self.connection = None
+    
+    def send_command(self, command, expect_string=None):
+        """Send a command and return the output."""
+        if not self.connection:
+            if not self.connect():
+                return None
+        
+        try:
+            output = self.connection.send_command(
+                command,
+                expect_string=expect_string or r'[>#]',
+                read_timeout=10,
+            )
+            return output
+        except Exception as e:
+            print(f"[SSH] Command failed: {e}")
+            return None
+    
+    def collect_telemetry(self):
+        """Collect all telemetry metrics from the device."""
+        if not self.connection:
+            if not self.connect():
+                return None
+        
+        telemetry = {
+            'cpu_usage': None,
+            'memory_usage': None,
+            'latency_ms': None,
+            'packet_loss': None,
+            'interface_status': {},
+            'ospf_neighbors': [],
+            'raw_output': '',
+        }
+        
+        try:
+            # Collect CPU
+            cpu_output = self.send_command('show cpu')
+            if cpu_output:
+                telemetry['raw_output'] += f"=== CPU ===\n{cpu_output}\n"
+                telemetry['cpu_usage'] = self._parse_cpu(cpu_output)
+                print(f"[TELEMETRY] CPU: {telemetry['cpu_usage']}%")
+            
+            # Collect memory
+            mem_output = self.send_command('show memory')
+            if mem_output:
+                telemetry['raw_output'] += f"=== MEMORY ===\n{mem_output}\n"
+                telemetry['memory_usage'] = self._parse_memory(mem_output)
+                print(f"[TELEMETRY] Memory: {telemetry['memory_usage']}%")
+            
+            # Collect interface status
+            int_output = self.send_command('show interface')
+            if int_output:
+                telemetry['raw_output'] += f"=== INTERFACES ===\n{int_output}\n"
+                telemetry['interface_status'] = self._parse_interfaces(int_output)
+                # Calculate packet loss from interface errors
+                total_errors = sum(
+                    details.get('errors', 0)
+                    for details in telemetry['interface_status'].values()
+                )
+                telemetry['packet_loss'] = min(total_errors * 0.1, 100.0)
+                print(f"[TELEMETRY] Interfaces up: {self._count_up_interfaces(telemetry['interface_status'])}")
+            
+            # Collect OSPF neighbors
+            ospf_output = self.send_command('show ip ospf neighbor')
+            if ospf_output:
+                telemetry['raw_output'] += f"=== OSPF ===\n{ospf_output}\n"
+                telemetry['ospf_neighbors'] = self._parse_ospf(ospf_output)
+                print(f"[TELEMETRY] OSPF neighbors: {len(telemetry['ospf_neighbors'])}")
+            
+        except Exception as e:
+            print(f"[TELEMETRY] Collection error: {e}")
+        
+        return telemetry
+    
+    def execute_healing_command(self, command):
+        """Execute a healing command on the device."""
+        print(f"[HEALING] Executing: {command}")
+        output = self.send_command(command)
+        success = output is not None and 'invalid' not in output.lower()
+        return {
+            'success': success,
+            'command': command,
+            'output': output or 'No output',
+        }
+    
+    def inject_failure(self, failure_type):
+        """Inject a simulated failure (mock server only)."""
+        failure_commands = {
+            'service_crash': 'inject_service_crash',
+            'link_failure': 'inject_link_failure',
+            'ddos': 'inject_ddos',
+        }
+        command = failure_commands.get(failure_type)
+        if command:
+            return self.send_command(command)
+        return f"Unknown failure type: {failure_type}"
+    
+    def reset_network(self):
+        """Reset mock network to healthy state."""
+        return self.send_command('reset_network')
+    
+    # ---------- Parsing Methods ----------
+    
+    def _parse_cpu(self, output):
+        """Extract CPU percentage from command output."""
+        patterns = [
+            r'five seconds:\s*(\d+\.?\d*)%',
+            r'CPU utilization.*?(\d+\.?\d*)%',
+            r'cpu-used.*?(\d+\.?\d*)%',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, output, re.IGNORECASE)
+            if match:
+                return float(match.group(1))
+        return None
+    
+    def _parse_memory(self, output):
+        """Extract memory usage percentage from command output."""
+        lines = output.strip().split('\n')
+        for line in lines:
+            if 'Processor' in line:
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if 'M' in part and i + 1 < len(parts):
+                        try:
+                            total = float(part.replace('M', ''))
+                            used = float(parts[i + 1].replace('M', ''))
+                            return round((used / total) * 100, 1)
+                        except (ValueError, IndexError):
+                            pass
+        return None
+    
+    def _parse_interfaces(self, output):
+        """Parse interface status from command output."""
+        interfaces = {}
+        lines = output.strip().split('\n')
+        current_interface = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            if 'is up' in line.lower() or 'is down' in line.lower() or \
+               'administratively down' in line.lower():
+                parts = line.split()
+                if parts:
+                    current_interface = parts[0]
+                    status = 'up' if 'is up' in line.lower() else 'down'
+                    interfaces[current_interface] = {
+                        'status': status,
+                        'errors': 0,
+                    }
+            
+            if current_interface and 'errors' in line.lower():
+                match = re.search(r'(\d+)\s+input errors', line, re.IGNORECASE)
+                if match:
+                    interfaces[current_interface]['errors'] = int(match.group(1))
+        
+        return interfaces
+    
+    def _parse_ospf(self, output):
+        """Parse OSPF neighbor information."""
+        neighbors = []
+        lines = output.strip().split('\n')
+        for line in lines:
+            if 'FULL' in line:
+                parts = line.split()
+                if len(parts) >= 1:
+                    neighbors.append({'neighbor_id': parts[0], 'state': 'FULL'})
+        return neighbors
+    
+    def _count_up_interfaces(self, interfaces):
+        """Count interfaces that are up."""
+        return sum(1 for details in interfaces.values() if details.get('status') == 'up')
+
+
+# Quick test function
+def test_connection():
+    """Test connection to the mock SSH server."""
+    connector = NetworkDeviceConnector(
+        host='localhost',
+        port=2222,
+        username='admin',
+        password='anything',
+    )
+    
+    print("=" * 50)
+    print("TESTING SSH CONNECTION")
+    print("=" * 50)
+    
+    if connector.connect():
+        print("\n[TEST] Collecting telemetry...")
+        telemetry = connector.collect_telemetry()
+        
+        if telemetry:
+            print(f"\n[RESULT] CPU: {telemetry.get('cpu_usage')}%")
+            print(f"[RESULT] Memory: {telemetry.get('memory_usage')}%")
+            print(f"[RESULT] Packet Loss: {telemetry.get('packet_loss')}%")
+        
+        print("\n[TEST] Injecting service crash...")
+        connector.inject_failure('service_crash')
+        time.sleep(1)
+        
+        print("\n[TEST] Collecting post-failure telemetry...")
+        telemetry = connector.collect_telemetry()
+        if telemetry:
+            print(f"[RESULT] CPU: {telemetry.get('cpu_usage')}%")
+            print(f"[RESULT] Memory: {telemetry.get('memory_usage')}%")
+        
+        print("\n[TEST] Healing: restart service...")
+        result = connector.execute_healing_command('restart service nginx')
+        print(f"[RESULT] Healing: {result['output'].strip()}")
+        
+        connector.disconnect()
+    
+    print("\n[TEST] Complete")
+
+
+if __name__ == '__main__':
+    test_connection()
+```
+
+---
+
+### Step 3: Create the Management Command for Testing
+
+Create this file:
+```
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\management\commands\test_ssh.py
+```
+
+Copy and paste this:
+
+```python
+"""
+Management command to test SSH connection to the mock server.
+Usage: python manage.py test_ssh
+"""
+
+from django.core.management.base import BaseCommand
+from monitoring.ssh_client import test_connection
+
+
+class Command(BaseCommand):
+    help = 'Test SSH connection to the mock network device'
+
+    def handle(self, *args, **options):
+        self.stdout.write(self.style.SUCCESS('Testing SSH connection...'))
+        test_connection()
+        self.stdout.write(self.style.SUCCESS('Test complete.'))
+```
+
+---
+
+### Step 4: Test Everything
+
+**Terminal 1:** Make sure Mock SSH Server is running:
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse\simulation
+python mock_ssh_server.py
+```
+
+**Terminal 2:** Run the Django test:
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse\backend
+python manage.py test_ssh
+```
+
+You should see output like:
+```
+Testing SSH connection...
+[SSH] Connecting to localhost:2222...
+[SSH] Connected to localhost
+[TEST] Collecting telemetry...
+[TELEMETRY] CPU: 25.0%
+[TELEMETRY] Memory: 40.0%
+[RESULT] CPU: 25.0%
+[RESULT] Memory: 40.0%
+[TEST] Injecting service crash...
+[TEST] Collecting post-failure telemetry...
+[TELEMETRY] CPU: 98.0%
+[RESULT] CPU: 98.0%
+[TEST] Healing: restart service...
+[RESULT] Service restarted successfully.
+[TEST] Complete
+```
+
+---
+
+### Step 5: Create Telemetry Scheduler
+
+Create this file:
+```
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\scheduler.py
+```
+
+Copy and paste this:
+
+```python
+"""
+Background task for collecting telemetry from network devices.
+Runs every 5 seconds and saves data to the database.
+"""
+
+import time
+import threading
+from datetime import datetime
+from monitoring.ssh_client import NetworkDeviceConnector
+from monitoring.models import Device, Telemetry
+
+
+class TelemetryCollector:
+    """Collects telemetry from all managed devices on a schedule."""
+    
+    def __init__(self, interval=5):
+        self.interval = interval
+        self.running = False
+        self.thread = None
+        self.connectors = {}
+    
+    def start(self):
+        """Start the telemetry collection loop in a background thread."""
+        if self.running:
+            print("[SCHEDULER] Already running")
+            return
+        
+        self.running = True
+        self.thread = threading.Thread(target=self._collection_loop, daemon=True)
+        self.thread.start()
+        print(f"[SCHEDULER] Started (interval: {self.interval}s)")
+    
+    def stop(self):
+        """Stop the telemetry collection loop."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=10)
+        for connector in self.connectors.values():
+            connector.disconnect()
+        print("[SCHEDULER] Stopped")
+    
+    def _get_or_create_connector(self, device):
+        """Get existing connector or create a new one."""
+        if device.id not in self.connectors:
+            self.connectors[device.id] = NetworkDeviceConnector(
+                host=device.ip_address,
+                port=device.ssh_port,
+                username=device.username,
+                password=device.password,
+            )
+        return self.connectors[device.id]
+    
+    def _collection_loop(self):
+        """Main loop: collect telemetry from all devices."""
+        while self.running:
+            try:
+                devices = Device.objects.filter(status__in=['ONLINE', 'DEGRADED'])
+                
+                if not devices.exists():
+                    # If no devices in DB, create default mock device
+                    device, created = Device.objects.get_or_create(
+                        ip_address='127.0.0.1',
+                        defaults={
+                            'name': 'MockRouter01',
+                            'device_type': 'router',
+                            'vendor': 'Mock',
+                            'ssh_port': 2222,
+                            'username': 'admin',
+                            'password': 'anything',
+                        }
+                    )
+                    if created:
+                        print(f"[SCHEDULER] Created default device: {device.name}")
+                    devices = Device.objects.filter(id=device.id)
+                
+                for device in devices:
+                    connector = self._get_or_create_connector(device)
+                    
+                    # Collect telemetry
+                    data = connector.collect_telemetry()
+                    
+                    if data:
+                        # Save to database
+                        Telemetry.objects.create(
+                            device=device,
+                            cpu_usage=data.get('cpu_usage'),
+                            memory_usage=data.get('memory_usage'),
+                            latency_ms=data.get('latency_ms'),
+                            packet_loss=data.get('packet_loss'),
+                            interface_status=data.get('interface_status'),
+                            raw_output=data.get('raw_output', ''),
+                        )
+                        print(f"[SCHEDULER] Saved telemetry from {device.name}")
+                    else:
+                        print(f"[SCHEDULER] Failed to collect from {device.name}")
+                
+            except Exception as e:
+                print(f"[SCHEDULER] Error in collection loop: {e}")
+            
+            # Wait for next interval
+            time.sleep(self.interval)
+
+
+# Global instance
+collector = TelemetryCollector(interval=5)
+```
+
+---
+
+### Step 6: Create Start Scheduler Command
+
+Create this file:
+```
+C:\Users\Blessings\Documents\NeuroSynapse\backend\monitoring\management\commands\start_collector.py
+```
+
+Copy and paste:
+
+```python
+"""
+Management command to start the telemetry collector.
+Usage: python manage.py start_collector
+"""
+
+import signal
+from django.core.management.base import BaseCommand
+from monitoring.scheduler import collector
+
+
+class Command(BaseCommand):
+    help = 'Start the telemetry collection loop (runs every 5 seconds)'
+
+    def handle(self, *args, **options):
+        self.stdout.write(self.style.SUCCESS('Starting telemetry collector...'))
+        self.stdout.write(self.style.WARNING('Press Ctrl+C to stop'))
+        
+        # Handle graceful shutdown
+        def signal_handler(sig, frame):
+            self.stdout.write(self.style.WARNING('\nStopping collector...'))
+            collector.stop()
+            self.stdout.write(self.style.SUCCESS('Collector stopped.'))
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        
+        try:
+            collector.start()
+            # Keep main thread alive
+            while collector.running:
+                import time
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            collector.stop()
+```
+
+---
+
+### Step 7: Test the Full Loop
+
+**Terminal 1:** Mock SSH Server
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse\simulation
+python mock_ssh_server.py
+```
+
+**Terminal 2:** Django Server
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse\backend
+python manage.py runserver
+```
+
+**Terminal 3:** Telemetry Collector
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse\backend
+python manage.py start_collector
+```
+
+You should see output every 5 seconds:
+```
+[SCHEDULER] Started (interval: 5s)
+[SCHEDULER] Created default device: MockRouter01
+[SSH] Connecting to 127.0.0.1:2222...
+[SSH] Connected to 127.0.0.1
+[TELEMETRY] CPU: 25.0%
+[TELEMETRY] Memory: 40.0%
+[SCHEDULER] Saved telemetry from MockRouter01
+```
+
+Let it run for 30 seconds (6 collections), then press **Ctrl+C** in the collector terminal.
+
+---
+
+### Step 8: Verify Data in Database
+
+```bash
+cd C:\Users\Blessings\Documents\NeuroSynapse\backend
+python manage.py shell
+```
+
+In the Python shell, type:
+
+```python
+from monitoring.models import Telemetry, Device
+print(f"Devices: {Device.objects.count()}")
+print(f"Telemetry records: {Telemetry.objects.count()}")
+
+# Show last 3 records
+for t in Telemetry.objects.all()[:3]:
+    print(f"  [{t.timestamp}] CPU: {t.cpu_usage}%, Memory: {t.memory_usage}%")
+
+exit()
+```
+
+You should see several telemetry records with timestamps ~5 seconds apart.
+
+---
+
+### Session 2 Complete
+
+| Component | Status | Test |
+|-----------|--------|------|
+| SSH Client | ✅ Working | Connects to mock server |
+| Telemetry Parser | ✅ Working | Extracts CPU, memory, interfaces |
+| Scheduler | ✅ Running | Collects every 5 seconds |
+| Database Storage | ✅ Working | Telemetry records saved |
+
+---
+
+**Backup time:**
+```bash
+xcopy C:\Users\Blessings\Documents\NeuroSynapse C:\Users\Blessings\Documents\NeuroSynapse_Backups\Week_01_Apr30_Session2 /E /I
+```
+
+Update your Build Plan: add today's files and note that telemetry collection is working.
+
+---
+
+**Next session (Session 3):** We build the ML anomaly detection engine using synthetic training data. That's where the AI part begins.
+
+Say **"Session 2 done"** when you've tested everything and I'll give you Session 3.
