@@ -1,10 +1,11 @@
 import axios from 'axios'
 
-const API_BASE_URL = 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 10000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -38,6 +39,28 @@ export default {
 
   getHealingExplanation(healingId) {
     return api.get(`/api/xai/healing/${healingId}/`)
+  },
+
+  // Manual healing approval/rejection
+  approveHealing(incidentId) {
+    return api.post(`/api/incidents/${incidentId}/approve/`, {})
+  },
+
+  rejectHealing(incidentId) {
+    return api.post(`/api/incidents/${incidentId}/reject/`, {})
+  },
+
+  // Authentication
+  login(credentials) {
+    return api.post('/api/auth/login/', credentials)
+  },
+
+  logout() {
+    return api.post('/api/auth/logout/')
+  },
+
+  authStatus() {
+    return api.get('/api/auth/status/')
   },
 
   // Health check

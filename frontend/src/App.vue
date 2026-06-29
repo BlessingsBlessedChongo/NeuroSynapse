@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <v-app>
     <SystemHeader />
     <v-main>
@@ -8,7 +8,15 @@
 </template>
 
 <script setup>
+import { onMounted } from 'vue'
+import { useNetworkStore } from '@/stores/network'
 import SystemHeader from '@/components/SystemHeader.vue'
+
+const store = useNetworkStore()
+
+onMounted(() => {
+  store.checkAuth()
+})
 </script>
 
 <style>

@@ -15,14 +15,17 @@ from sklearn.metrics import (
     confusion_matrix, classification_report
 )
 
-# Create models directory
-os.makedirs('models', exist_ok=True)
+# Create models directory (at project root)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+models_dir = os.path.join(script_dir, '..', '..', 'models')
+os.makedirs(models_dir, exist_ok=True)
 
 # ============================================================
 # 1. LOAD DATA
 # ============================================================
 print("Loading training data...")
-df = pd.read_csv(os.path.join('training', 'network_training_data.csv'))
+training_csv = os.path.join(script_dir, 'training', 'network_training_data.csv')
+df = pd.read_csv(training_csv)
 
 # Features
 feature_columns = ['cpu_usage', 'memory_usage', 'packet_loss', 'latency_ms',
@@ -118,15 +121,15 @@ print("SAVING MODELS")
 print("="*50)
 
 # Save models
-joblib.dump(anomaly_detector, os.path.join('models', 'anomaly_detector.pkl'))
-print("Saved: models/anomaly_detector.pkl")
+joblib.dump(anomaly_detector, os.path.join(models_dir, 'anomaly_detector.pkl'))
+print(f"Saved: {os.path.join(models_dir, 'anomaly_detector.pkl')}")
 
-joblib.dump(classifier, os.path.join('models', 'failure_classifier.pkl'))
-print("Saved: models/failure_classifier.pkl")
+joblib.dump(classifier, os.path.join(models_dir, 'failure_classifier.pkl'))
+print(f"Saved: {os.path.join(models_dir, 'failure_classifier.pkl')}")
 
 # Save feature columns
-joblib.dump(feature_columns, os.path.join('models', 'feature_columns.pkl'))
-print("Saved: models/feature_columns.pkl")
+joblib.dump(feature_columns, os.path.join(models_dir, 'feature_columns.pkl'))
+print(f"Saved: {os.path.join(models_dir, 'feature_columns.pkl')}")
 
 # Save training metadata
 metadata = {
@@ -137,14 +140,14 @@ metadata = {
     'cv_mean': cv_scores.mean(),
     'classes': classifier.classes_.tolist(),
 }
-joblib.dump(metadata, os.path.join('models', 'model_metadata.pkl'))
-print("Saved: models/model_metadata.pkl")
+joblib.dump(metadata, os.path.join(models_dir, 'model_metadata.pkl'))
+print(f"Saved: {os.path.join(models_dir, 'model_metadata.pkl')}")
 
 print(f"\n{'='*50}")
 print(f"TRAINING COMPLETE")
 print(f"Anomaly Detection Accuracy: {anomaly_accuracy:.2%}")
 print(f"Failure Classification Accuracy: {classifier_accuracy:.2%}")
-print(f"Models saved in: models/")
+print(f"Models saved in: {models_dir}")
 print(f"{'='*50}")
 
 # ============================================================

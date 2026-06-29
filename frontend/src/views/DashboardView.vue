@@ -10,6 +10,13 @@
       </v-col>
     </v-row>
 
+    <!-- Telemetry Chart -->
+    <v-row class="mt-4">
+      <v-col cols="12">
+        <TelemetryChart />
+      </v-col>
+    </v-row>
+
     <!-- Incidents and Healings -->
     <v-row class="mt-4">
       <v-col cols="12" md="6">
@@ -22,11 +29,24 @@
 
     <!-- XAI and RL Stats -->
     <v-row class="mt-4">
-      <v-col cols="12" md="7">
-        <XaiPanel />
+      <v-col cols="12" lg="7">
+        <ImprovedXaiPanel />
       </v-col>
-      <v-col cols="12" md="5">
+      <v-col cols="12" lg="5">
         <RLStats />
+      </v-col>
+    </v-row>
+
+    <!-- Manual Override -->
+    <v-row class="mt-4">
+      <v-col cols="12">
+        <ManualOverride />
+      </v-col>
+    </v-row>
+
+    <v-row class="mt-4">
+    <v-col cols="12" lg="6">
+        <MapekIndicator />
       </v-col>
     </v-row>
 
@@ -48,8 +68,11 @@ import StatsCards from '@/components/StatsCards.vue'
 import DeviceList from '@/components/DeviceList.vue'
 import IncidentList from '@/components/IncidentList.vue'
 import HealingHistory from '@/components/HealingHistory.vue'
-import XaiPanel from '@/components/XaiPanel.vue'
+import ImprovedXaiPanel from '@/components/ImprovedXaiPanel.vue'
+import TelemetryChart from '@/components/TelemetryChart.vue'
 import RLStats from '@/components/RLStats.vue'
+import ManualOverride from '@/components/ManualOverride.vue'
+import MapekIndicator from '@/components/MapekIndicator.vue'
 
 const store = useNetworkStore()
 

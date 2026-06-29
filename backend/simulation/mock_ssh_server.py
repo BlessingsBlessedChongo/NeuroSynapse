@@ -1,11 +1,12 @@
 """
-NeuroSynapse Mock SSH Server (paramiko – bulletproof exec handling)
+NeuroSynapse Mock SSH Server – FIXED (No premature channel close)
 """
 
 import socket
 import threading
 import random
 import paramiko
+import time
 
 
 class MockRouterServer(paramiko.ServerInterface):
@@ -38,32 +39,29 @@ class MockRouterServer(paramiko.ServerInterface):
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_exec_request(self, channel, command):
-        cmd = command.decode().strip()
+        cmd = command.decode('utf-8').strip()
         print(f"[MOCK ROUTER] CMD: {cmd}")
 
         try:
             output = self._process_command(cmd)
-            channel.send(output)
+            if output:
+                channel.sendall(output.encode('utf-8'))
             channel.send_exit_status(0)
+            print(f"[MOCK ROUTER] Command '{cmd}' completed")
         except Exception as e:
-            # If we can't send (e.g. socket closed), just log and move on
-            print(f"[MOCK ROUTER] Failed to send response for '{cmd}': {e}")
+            print(f"[MOCK ROUTER] Error executing '{cmd}': {e}")
+            try:
+                channel.send_exit_status(1)
+            except:
+                pass
         finally:
+            # ✅ Close the channel – this signals EOF to the client
             try:
                 channel.close()
             except:
                 pass
-        # Return False to prevent a shell from being opened afterwards
-        return False
 
-    def check_channel_shell_request(self, channel):
-        return False
-
-    def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
-        return False
-
-    def enable_auth_gssapi(self):
-        return False
+        return True     
 
     # --- command processing (unchanged) ---
     def _process_command(self, cmd):
@@ -75,15 +73,6 @@ class MockRouterServer(paramiko.ServerInterface):
             return self._memory_output()
         if lower in ['show interface', 'show interfaces', 'interface print']:
             return self._interface_output()
-
-        if 'restart' in lower and 'service' in lower:
-            return self._restart_service()
-        if 'shutdown' in lower and 'interface' in lower:
-            return self._shutdown_interface(cmd)
-        if 'no shutdown' in lower or 'no shut' in lower:
-            return self._enable_interface(cmd)
-        if 'reboot' in lower:
-            return self._reboot()
 
         if lower == 'inject_service_crash':
             self.device_state['cpu_usage'] = 98.0
@@ -140,53 +129,33 @@ Processor   0x1F0     {total}       {used:.0f}       {free:.0f}       2800      
             lines.append(f"{name:22} 192.168.1.1     YES manual {status:8}            {proto}")
         return "\r\n".join(lines) + "\r\n"
 
-    def _restart_service(self):
-        print("[MOCK ROUTER] HEALING: restart_service")
-        self.device_state['cpu_usage'] = 35.0
-        self.device_state['memory_usage'] = 42.0
-        self.device_state['health_status'] = 'HEALTHY'
-        self.device_state['active_incident'] = None
-        return "Service restarted successfully.\r\n"
 
-    def _shutdown_interface(self, command):
-        for name in self.device_state['interface_status']:
-            if name.lower() in command.lower():
-                self.device_state['interface_status'][name]['status'] = 'administratively down'
-                return f"Interface {name} shutdown\r\n"
-        return "% Interface not found\r\n"
-
-    def _enable_interface(self, command):
-        for name in self.device_state['interface_status']:
-            if name.lower() in command.lower():
-                self.device_state['interface_status'][name]['status'] = 'up'
-                self.device_state['interface_status'][name]['errors'] = 0
-                return f"Interface {name} enabled\r\n"
-        return "% Interface not found\r\n"
-
-    def _reboot(self):
-        self.device_state = self._get_default_state()
-        self.device_state['cpu_usage'] = 30.0
-        return "Device rebooted successfully.\r\n"
-
-
+# ====================== CLIENT HANDLER ======================
 def handle_client(client_socket):
     transport = paramiko.Transport(client_socket)
-    host_key = paramiko.RSAKey.generate(2048)
+    channels = []  # Prevent GC from closing channels prematurely
     try:
+        host_key = paramiko.RSAKey.generate(2048)
         transport.add_server_key(host_key)
         server = MockRouterServer()
         transport.start_server(server=server)
 
-        # Keep the transport alive while the client is connected.
-        # All exec requests are processed inline in check_channel_exec_request.
         while transport.is_active():
             channel = transport.accept(30)
-            if channel is not None:
-                channel.close()
+            if channel is None:
+                time.sleep(0.2)
+                # Clean out closed channels
+                channels = [ch for ch in channels if not ch.closed]
+                continue
+            channels.append(channel)
     except Exception as e:
-        print(f"[MOCK ROUTER] Client handler error: {e}")
+        if "Socket is closed" not in str(e) and "Connection reset" not in str(e):
+            print(f"[MOCK ROUTER] Handler error: {e}")
     finally:
-        transport.close()
+        try:
+            transport.close()
+        except:
+            pass
 
 
 def start_server():
@@ -195,28 +164,19 @@ def start_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
-    sock.listen(5)
+    sock.listen(10)
 
-    print("=" * 55)
-    print("  NEUROSYNAPSE MOCK ROUTER SSH SERVER (paramiko)")
-    print("=" * 55)
+    print("=" * 60)
+    print("  NEUROSYNAPSE MOCK ROUTER SSH SERVER (FIXED)")
+    print("=" * 60)
     print(f"  Listening: {host}:{port}")
-    print(f"  Username:  admin")
-    print(f"  Password:  anything")
-    print("-" * 55)
-    print("  Special commands for testing:")
-    print("    inject_service_crash  - Simulate service failure")
-    print("    inject_link_failure   - Simulate link failure")
-    print("    inject_ddos           - Simulate DDoS attack")
-    print("    reset_network         - Return to healthy state")
-    print("=" * 55)
+    print("=" * 60)
 
     try:
         while True:
             client, addr = sock.accept()
             print(f"[MOCK ROUTER] Connection from {addr}")
-            t = threading.Thread(target=handle_client, args=(client,))
-            t.daemon = True
+            t = threading.Thread(target=handle_client, args=(client,), daemon=True)
             t.start()
     except KeyboardInterrupt:
         print("\n[MOCK ROUTER] Shutting down...")

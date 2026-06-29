@@ -7,8 +7,10 @@ import numpy as np
 import pandas as pd
 import os
 
-# Create output directory
-os.makedirs('training', exist_ok=True)
+# Create output directory (relative to this script)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+training_dir = os.path.join(script_dir, 'training')
+os.makedirs(training_dir, exist_ok=True)
 
 np.random.seed(42)
 
@@ -99,7 +101,7 @@ df = pd.DataFrame(data)
 df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
 # Save
-output_path = os.path.join('training', 'network_training_data.csv')
+output_path = os.path.join(training_dir, 'network_training_data.csv')
 df.to_csv(output_path, index=False)
 
 print(f"\n{'='*50}")
@@ -107,6 +109,8 @@ print(f"Training data saved to: {output_path}")
 print(f"Total samples: {len(df)}")
 print(f"\nClass distribution:")
 for label in df['label'].value_counts().index:
-    print(f"  {label}: {df['label'].value_counts()[label]} ({df['label'].value_counts()[label]/len(df)*100:.1f}%)")
+    count = df['label'].value_counts()[label]
+    percentage = count/len(df)*100
+    print(f"  {label}: {count} ({percentage:.1f}%)")
 print(f"\nFeature columns: {list(df.columns[:-1])}")
 print(f"{'='*50}")

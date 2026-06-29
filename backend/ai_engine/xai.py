@@ -32,16 +32,31 @@ class XAIEngine:
         Returns:
             Dictionary with explanation components
         """
-        # Extract values
-        cpu = telemetry.cpu_usage if hasattr(telemetry, 'cpu_usage') else telemetry.get('cpu_usage', 0)
-        memory = telemetry.memory_usage if hasattr(telemetry, 'memory_usage') else telemetry.get('memory_usage', 0)
-        packet_loss = telemetry.packet_loss if hasattr(telemetry, 'packet_loss') else telemetry.get('packet_loss', 0)
-        latency = telemetry.latency_ms if hasattr(telemetry, 'latency_ms') else telemetry.get('latency_ms', 0)
-        bandwidth = telemetry.bandwidth_util if hasattr(telemetry, 'bandwidth_util') else telemetry.get('bandwidth_util', 30)
-        
-        # Get interface status if available
-        interface_status = telemetry.interface_status if hasattr(telemetry, 'interface_status') else telemetry.get('interface_status', {})
-        up_count = sum(1 for d in interface_status.values() if d.get('status') == 'up') if interface_status else 0
+        # Robust extraction – always a number, never None
+        def safe_float(val, default=0.0):
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+
+        if hasattr(telemetry, 'cpu_usage'):
+            cpu = safe_float(telemetry.cpu_usage, 0.0)
+            memory = safe_float(telemetry.memory_usage, 0.0)
+            packet_loss = safe_float(telemetry.packet_loss, 0.0)
+            latency = safe_float(telemetry.latency_ms, 0.0)
+            bandwidth = safe_float(telemetry.bandwidth_util, 30.0)
+            interface_status = telemetry.interface_status if isinstance(telemetry.interface_status, dict) else {}
+        else:  # it's a dict
+            cpu = safe_float(telemetry.get('cpu_usage'), 0.0)
+            memory = safe_float(telemetry.get('memory_usage'), 0.0)
+            packet_loss = safe_float(telemetry.get('packet_loss'), 0.0)
+            latency = safe_float(telemetry.get('latency_ms'), 0.0)
+            bandwidth = safe_float(telemetry.get('bandwidth_util'), 30.0)
+            interface_status = telemetry.get('interface_status', {}) or {}
+
+        up_count = sum(1 for d in interface_status.values() if d.get('status') == 'up')
         
         explanation = {
             'failure_type': failure_type,
@@ -88,7 +103,7 @@ class XAIEngine:
             )
             explanation['key_evidence'] = [
                 f"Packet loss is {packet_loss:.1f}% (critical: >50% indicates physical issue)",
-                f"Latency is {latency:.0f}ms (normal: <10ms, current is {latency/5:.0f}x normal)",
+                f"Latency is {latency:.0f}ms (normal: <10ms, current is {latency/5:.0f}x normal)" if latency > 0 else f"Latency is {latency:.0f}ms",
                 f"CPU usage is {cpu:.1f}% (normal, ruling out device overload)",
             ]
             explanation['what_this_means'] = (

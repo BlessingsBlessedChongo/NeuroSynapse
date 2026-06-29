@@ -1,7 +1,10 @@
 """Dashboard views for NeuroSynapse."""
 
+import json
+from django.contrib.auth import authenticate, login, logout
 from django.shortcuts import render
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 from monitoring.models import Device, Telemetry, Incident, HealingAction
 
 
@@ -202,3 +205,67 @@ def api_analytics(request):
         'healing_success_rate': healing_success_rate,
         'avg_detection_time': avg_detection_time,
     })
+
+@csrf_exempt
+def api_approve_incident(request, incident_id):
+    from monitoring.models import Incident
+    try:
+        incident = Incident.objects.get(id=incident_id, status='MANUAL_REVIEW')
+    except Incident.DoesNotExist:
+        return JsonResponse({'error': 'Incident not found or not in review'}, status=404)
+
+    # Trigger healing (same logic as orchestrator)
+    from ai_engine.orchestrator import orchestrator
+    healing = orchestrator.process_manual_approval(incident_id, approved=True)
+    return JsonResponse({'status': 'approved', 'healing_id': healing.id if healing else None})
+
+@csrf_exempt
+def api_reject_incident(request, incident_id):
+    from monitoring.models import Incident
+    try:
+        incident = Incident.objects.get(id=incident_id, status='MANUAL_REVIEW')
+    except Incident.DoesNotExist:
+        return JsonResponse({'error': 'Incident not found or not in review'}, status=404)
+
+    incident.status = 'DETECTED'  # back to detected for re-diagnosis
+    incident.save()
+    return JsonResponse({'status': 'rejected'})
+
+@csrf_exempt
+def api_login(request):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid method'}, status=405)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON payload'}, status=400)
+
+    username = payload.get('username')
+    password = payload.get('password')
+
+    if not username or not password:
+        return JsonResponse({'error': 'Username and password are required.'}, status=400)
+
+    user = authenticate(request, username=username, password=password)
+    if user is None:
+        return JsonResponse({'error': 'Invalid credentials.'}, status=401)
+
+    if not user.is_staff:
+        return JsonResponse({'error': 'Admin access required.'}, status=403)
+
+    login(request, user)
+    return JsonResponse({'username': user.username, 'is_admin': user.is_staff, 'authenticated': True})
+
+
+def api_auth_status(request):
+    return JsonResponse({
+        'authenticated': request.user.is_authenticated,
+        'username': request.user.username if request.user.is_authenticated else None,
+        'is_admin': request.user.is_staff if request.user.is_authenticated else False,
+    })
+
+@csrf_exempt
+def api_logout(request):
+    logout(request)
+    return JsonResponse({'authenticated': False})

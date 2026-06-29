@@ -10,49 +10,47 @@
         variant="text"
         @click="loadStats"
         :loading="loading"
+        :disabled="!loaded && loading"
       ></v-btn>
     </v-card-title>
 
-    <v-card-text v-if="store.rlStats">
+    <v-card-text v-if="store.rlStats && loaded">
       <v-row dense>
         <v-col cols="6">
           <div class="text-caption text-secondary">Training Episodes</div>
-          <div class="text-h6">{{ store.rlStats.episode_count }}</div>
+          <div class="text-h6">{{ store.rlStats.episode_count || 0 }}</div>
         </v-col>
         <v-col cols="6">
           <div class="text-caption text-secondary">Exploration Rate</div>
-          <div class="text-h6">{{ (store.rlStats.epsilon * 100).toFixed(1) }}%</div>
+          <div class="text-h6">{{ ((store.rlStats.epsilon || 0) * 100).toFixed(1) }}%</div>
         </v-col>
         <v-col cols="6">
           <div class="text-caption text-secondary">Recent Performance</div>
-          <div class="text-h6 text-success">{{ (store.rlStats.recent_performance * 100).toFixed(0) }}%</div>
+          <div class="text-h6 text-success">{{ ((store.rlStats.recent_performance || 0) * 100).toFixed(0) }}%</div>
         </v-col>
         <v-col cols="6">
           <div class="text-caption text-secondary">Q-Table Size</div>
-          <div class="text-h6">{{ store.rlStats.q_table_size }}</div>
+          <div class="text-h6">{{ store.rlStats.q_table_size || 0 }}</div>
         </v-col>
       </v-row>
-
-      <v-divider class="my-3"></v-divider>
-
-      <div class="text-caption text-secondary mb-2">Learned Best Actions</div>
-      <v-chip
-        v-for="(info, failureType) in store.rlStats.best_actions"
-        :key="failureType"
-        size="small"
-        variant="flat"
-        color="primary"
-        class="mr-1 mb-1"
-      >
-        {{ failureType }}: Action {{ info.action_index }}
-      </v-chip>
     </v-card-text>
 
-    <v-card-text v-else>
-      <div class="text-center text-secondary py-2">
-        <v-progress-circular indeterminate color="primary" class="mb-2"></v-progress-circular>
-        <div>Loading RL stats...</div>
-      </div>
+    <v-card-text v-else-if="error" class="text-center py-4">
+      <v-icon icon="mdi-alert-circle" size="48" color="error" class="mb-2"></v-icon>
+      <p class="text-error text-body-2">{{ error }}</p>
+      <v-btn size="small" variant="outlined" @click="loadStats" class="mt-2" :loading="loading">
+        Retry
+      </v-btn>
+    </v-card-text>
+
+    <v-card-text v-else-if="loading && !loaded" class="text-center py-4">
+      <v-progress-circular indeterminate color="primary" size="32" class="mb-2"></v-progress-circular>
+      <div class="text-secondary text-body-2">Loading RL stats...</div>
+    </v-card-text>
+
+    <v-card-text v-else class="text-center py-4">
+      <v-icon icon="mdi-information" size="40" color="info" class="mb-2"></v-icon>
+      <p class="text-secondary text-body-2">No RL data available</p>
     </v-card-text>
   </v-card>
 </template>
@@ -63,11 +61,22 @@ import { useNetworkStore } from '@/stores/network'
 
 const store = useNetworkStore()
 const loading = ref(false)
+const loaded = ref(false)
+const error = ref(null)
 
 async function loadStats() {
   loading.value = true
-  await store.fetchRLStats()
-  loading.value = false
+  error.value = null
+
+  try {
+    await store.fetchRLStats()
+    loaded.value = true
+  } catch (err) {
+    error.value = 'Failed to load RL stats'
+    console.error('RL stats fetch error:', err)
+  } finally {
+    loading.value = false
+  }
 }
 
 onMounted(() => {

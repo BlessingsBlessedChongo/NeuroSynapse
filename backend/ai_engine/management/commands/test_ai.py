@@ -16,7 +16,7 @@ class Command(BaseCommand):
         
         if not engine.loaded:
             self.stdout.write(self.style.ERROR(
-                'Models not loaded. Run training first: python training/train_models.py'
+                'Models not loaded. Run: python manage.py shell < ../backend/training/train_models.py OR python backend/training/train_models.py'
             ))
             return
         
