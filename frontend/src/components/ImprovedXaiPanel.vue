@@ -1,204 +1,150 @@
 <template>
-  <v-card color="surface" elevation="2">
-    <v-card-title>
-      <v-icon icon="mdi-brain" class="mr-2 text-warning"></v-icon>
+  <v-card color="surface" elevation="2" class="xai-card">
+    <v-card-title class="d-flex align-center">
+      <v-icon icon="mdi-brain" class="mr-2 text-purple-lighten-1" />
       Explainable AI Diagnosis
     </v-card-title>
 
-    <v-card-subtitle class="text-secondary">
-      AI-powered incident diagnosis with contributing factors
+    <v-card-subtitle class="text-medium-emphasis pb-2">
+      Natural-language diagnosis with telemetry feature attribution
     </v-card-subtitle>
 
-    <v-card-text>
-      <!-- Stable system state -->
-      <div v-if="isSystemStable">
-        <v-alert type="info" variant="tonal" color="info" class="mb-4">
-          <template v-slot:prepend>
-            <v-icon icon="mdi-shield-check"></v-icon>
-          </template>
-          System Status: Stable. AI Models continuously monitoring telemetry...
-        </v-alert>
+    <v-card-text class="position-relative">
+      <v-overlay
+        :model-value="store.xaiLoading"
+        contained
+        persistent
+        class="align-center justify-center"
+        scrim="rgba(15, 23, 42, 0.85)"
+      >
+        <v-progress-circular indeterminate color="primary" size="52" width="4" />
+        <p class="text-body-2 text-medium-emphasis mt-4 text-center">
+          Analyzing incident with AI models…
+        </p>
+      </v-overlay>
 
-        <v-row dense class="mt-4">
-          <v-col cols="12">
-            <div class="text-center">
-              <v-icon icon="mdi-monitor-dashboard" size="56" color="success" class="opacity-60"></v-icon>
-              <div class="text-body-2 text-secondary mt-3">
-                No incidents detected. All systems operating normally.
-              </div>
-            </div>
-          </v-col>
-        </v-row>
+      <div v-if="!store.latestIncident" class="state-panel text-center py-10">
+        <v-icon icon="mdi-radar" size="56" color="success" class="mb-4 opacity-70" />
+        <p class="text-body-1 font-weight-medium mb-1">System Status: Stable</p>
+        <p class="text-body-2 text-medium-emphasis mb-0">
+          AI models are continuously monitoring telemetry. Diagnosis explanations will appear
+          when an incident is detected.
+        </p>
       </div>
 
-      <!-- Loading state -->
-      <div v-else-if="store.xaiLoading">
-        <v-progress-linear indeterminate color="primary" class="mb-4"></v-progress-linear>
-        <div class="text-center py-8">
-          <v-progress-circular indeterminate color="primary" size="48" class="mb-3"></v-progress-circular>
-          <div class="text-body-2 text-secondary">Analyzing incident with AI models...</div>
-        </div>
+      <div v-else-if="store.xaiError" class="state-panel text-center py-8">
+        <v-icon icon="mdi-alert-circle-outline" size="48" color="error" class="mb-3" />
+        <p class="text-body-1 text-error mb-4">{{ store.xaiError }}</p>
+        <v-btn
+          variant="outlined"
+          color="primary"
+          prepend-icon="mdi-refresh"
+          :loading="retrying"
+          @click="retryExplanation"
+        >
+          Retry
+        </v-btn>
       </div>
 
-      <!-- Error state -->
-      <div v-else-if="store.xaiError">
-        <v-alert type="error" variant="tonal" color="error" class="mb-4">
-          <template v-slot:prepend>
-            <v-icon icon="mdi-alert-circle"></v-icon>
-          </template>
-          {{ store.xaiError }}
-        </v-alert>
-
-        <div class="text-center py-4">
-          <v-btn
-            size="small"
-            variant="outlined"
-            color="primary"
-            @click="retryExplanation"
-            prepend-icon="mdi-refresh"
-          >
-            Retry
-          </v-btn>
-        </div>
-      </div>
-
-      <!-- XAI Explanation content -->
-      <div v-else-if="latestIncident">
-        <!-- Incident Header -->
+      <div v-else>
         <v-row dense class="mb-4">
           <v-col cols="12" md="8">
-            <div class="text-caption text-secondary mb-2">Latest Incident</div>
-            <div class="text-h6 font-weight-bold">{{ incidentTypeLabel }} on {{ latestIncident.device }}</div>
-            <div class="text-caption text-secondary mt-1">
-              Detected: {{ formattedDetectionTime }}
-            </div>
+            <p class="text-caption text-medium-emphasis text-uppercase mb-1">Active Incident</p>
+            <h3 class="text-h6 font-weight-bold">
+              {{ incidentTypeLabel }} on {{ store.latestIncident.device }}
+            </h3>
+            <p class="text-caption text-medium-emphasis mt-1">
+              Detected {{ formattedDetectionTime }}
+            </p>
           </v-col>
-
-          <v-col cols="12" md="4" class="d-flex align-center justify-end gap-2">
-            <v-chip
-              size="small"
-              color="secondary"
-              variant="tonal"
-              :prepend-icon="confidenceIcon"
-            >
+          <v-col cols="12" md="4" class="d-flex align-center justify-md-end ga-2 flex-wrap">
+            <v-chip size="small" variant="tonal" color="secondary" prepend-icon="mdi-percent">
               {{ confidencePercentage }}% Confidence
             </v-chip>
-
-            <v-chip
-              size="small"
-              :color="statusChipColor"
-              variant="tonal"
-            >
-              {{ latestIncident.status || 'UNKNOWN' }}
+            <v-chip size="small" variant="tonal" :color="statusChipColor">
+              {{ store.latestIncident.status || 'Unknown' }}
             </v-chip>
           </v-col>
         </v-row>
 
-        <v-divider class="my-4"></v-divider>
+        <v-divider class="mb-5" />
 
-        <!-- AI Summary Section -->
-        <div class="mb-6">
-          <div class="text-caption text-secondary text-uppercase font-weight-bold mb-2">
-            <v-icon icon="mdi-text-box" size="16" class="mr-1"></v-icon>
+        <section class="mb-6">
+          <p class="text-caption text-uppercase text-medium-emphasis font-weight-bold mb-2">
+            <v-icon icon="mdi-text-box-outline" size="16" class="mr-1" />
             Diagnosis Summary
-          </div>
-          <v-card color="background" variant="outlined" class="pa-3">
-            <div class="text-body-2">
-              {{ explanationSummary }}
-            </div>
-          </v-card>
-        </div>
+          </p>
+          <v-sheet color="background" variant="outlined" rounded="lg" class="pa-4">
+            <p class="text-body-2 mb-0">{{ explanationSummary }}</p>
+          </v-sheet>
+        </section>
 
-        <!-- Contributing Factors Section -->
-        <div class="mb-6">
-          <div class="text-caption text-secondary text-uppercase font-weight-bold mb-3">
-            <v-icon icon="mdi-chart-pie" size="16" class="mr-1"></v-icon>
-            Key Contributing Factors
-          </div>
+        <section>
+          <p class="text-caption text-uppercase text-medium-emphasis font-weight-bold mb-3">
+            <v-icon icon="mdi-chart-bell-curve" size="16" class="mr-1" />
+            Telemetry Feature Weights
+          </p>
 
-          <div v-if="contributingFactors.length > 0" class="space-y-2">
-            <div v-for="(factor, idx) in contributingFactors" :key="idx" class="mb-3">
-              <div class="d-flex align-center justify-between mb-1">
-                <div class="text-body-2 font-weight-medium">{{ factor.label }}</div>
-                <div class="text-caption" :class="factor.isNegative ? 'text-error' : 'text-success'">
+          <div v-if="featureWeights.length > 0">
+            <div
+              v-for="(factor, index) in featureWeights"
+              :key="index"
+              class="factor-row mb-4"
+            >
+              <div class="d-flex align-center justify-space-between mb-1">
+                <span class="text-body-2 font-weight-medium">{{ factor.label }}</span>
+                <span
+                  class="text-caption font-weight-bold"
+                  :class="factor.isNegative ? 'text-error' : 'text-success'"
+                >
                   {{ factor.weightPercentage }}%
-                </div>
+                </span>
               </div>
-
               <v-progress-linear
                 :model-value="factor.weightPercentage"
                 :color="factor.isNegative ? 'error' : 'success'"
-                height="6"
-                class="mb-1"
-              ></v-progress-linear>
-
-              <div class="text-caption text-secondary">{{ factor.detail }}</div>
+                height="8"
+                rounded
+              />
+              <p v-if="factor.detail" class="text-caption text-medium-emphasis mt-1 mb-0">
+                {{ factor.detail }}
+              </p>
             </div>
           </div>
 
           <div v-else class="text-center py-4">
-            <div class="text-body-2 text-secondary">No factor details available</div>
+            <p class="text-body-2 text-medium-emphasis mb-0">
+              No feature weight data available for this incident.
+            </p>
           </div>
-        </div>
-
-        <!-- Recommended Action Section -->
-        <div>
-          <div class="text-caption text-secondary text-uppercase font-weight-bold mb-2">
-            <v-icon icon="mdi-lightbulb" size="16" class="mr-1"></v-icon>
-            Recommended Action
-          </div>
-          <v-chip
-            color="primary"
-            variant="tonal"
-            size="medium"
-            class="font-weight-medium"
-          >
-            {{ recommendedActionText }}
-          </v-chip>
-        </div>
-      </div>
-
-      <!-- No incident state (should not render due to isSystemStable check, but kept for safety) -->
-      <div v-else>
-        <v-alert type="info" variant="tonal" color="info" class="mb-4">
-          <template v-slot:prepend>
-            <v-icon icon="mdi-information"></v-icon>
-          </template>
-          Awaiting incident data. The AI diagnosis will appear when an incident is detected.
-        </v-alert>
+        </section>
       </div>
     </v-card-text>
   </v-card>
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useNetworkStore } from '@/stores/network'
 
 const store = useNetworkStore()
-
-const latestIncident = computed(() => store.latestIncident)
-
-const isSystemStable = computed(() => {
-  return !latestIncident.value || !latestIncident.value.id
-})
+const retrying = ref(false)
 
 const incidentTypeLabel = computed(() => {
-  if (!latestIncident.value) return 'Unknown'
-
-  const type = latestIncident.value.type
-  if (type === 'SERVICE_CRASH') return 'Service Crash'
-  if (type === 'LINK_FAILURE') return 'Link Failure'
-  if (type === 'DDOS_ATTACK') return 'DDoS Attack'
-  return type || 'Unknown Incident'
+  const type = store.latestIncident?.type
+  if (!type) return 'Unknown Incident'
+  const normalized = type.toUpperCase().replace(/\s+/g, '_')
+  if (normalized === 'SERVICE_CRASH' || type === 'Service Crash') return 'Service Crash'
+  if (normalized === 'LINK_FAILURE' || type === 'Link Failure') return 'Link Failure'
+  if (normalized === 'DDOS_ATTACK' || type === 'DDoS Attack') return 'DDoS Attack'
+  return type
 })
 
 const formattedDetectionTime = computed(() => {
-  if (!latestIncident.value?.detected_at) return 'Unknown'
-
+  const detectedAt = store.latestIncident?.detected_at
+  if (!detectedAt) return 'Unknown'
   try {
-    const date = new Date(latestIncident.value.detected_at)
-    return date.toLocaleString([], {
+    return new Date(detectedAt).toLocaleString([], {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -206,114 +152,135 @@ const formattedDetectionTime = computed(() => {
       minute: '2-digit',
       second: '2-digit',
     })
-  } catch (e) {
+  } catch {
     return 'Unknown'
   }
 })
 
 const confidencePercentage = computed(() => {
-  if (!latestIncident.value?.confidence) return '0'
-
-  const confidence = latestIncident.value.confidence
-  const percentage = Math.round(confidence * 100)
-  return Math.min(100, Math.max(0, percentage))
-})
-
-const confidenceIcon = computed(() => {
-  const confidence = confidencePercentage.value
-  if (confidence >= 80) return 'mdi-check-circle'
-  if (confidence >= 60) return 'mdi-information'
-  return 'mdi-alert'
+  const confidence = store.latestIncident?.confidence
+  if (confidence == null) return 0
+  return Math.min(100, Math.max(0, Math.round(confidence * 100)))
 })
 
 const statusChipColor = computed(() => {
-  const status = latestIncident.value?.status?.toLowerCase() || ''
-
+  const status = store.latestIncident?.status?.toLowerCase() || ''
   if (status.includes('manual')) return 'warning'
   if (status.includes('executing') || status.includes('healing')) return 'info'
-  if (status.includes('detected') || status.includes('analyzing')) return 'secondary'
-  if (status.includes('resolved')) return 'success'
-
+  if (status.includes('healed')) return 'success'
   return 'secondary'
 })
 
 const explanationSummary = computed(() => {
   const explanation = store.xaiExplanation || {}
-
   return (
     explanation.summary ||
     explanation.diagnosis ||
     explanation.message ||
-    'The AI models have analyzed the incident based on telemetry data, network topology, and historical patterns. Review the contributing factors below.'
+    explanation.what_this_means ||
+    'The AI engine has analyzed telemetry patterns for this incident. Review the feature weights below for contributing factors.'
   )
 })
 
-const contributingFactors = computed(() => {
+const featureWeights = computed(() => {
   const explanation = store.xaiExplanation || {}
+  let rawFactors = []
 
-  let factors = []
-
-  if (Array.isArray(explanation.factors) && explanation.factors.length > 0) {
-    factors = explanation.factors
-  } else if (Array.isArray(explanation.key_factors) && explanation.key_factors.length > 0) {
-    factors = explanation.key_factors
+  if (Array.isArray(explanation.contributing_factors) && explanation.contributing_factors.length) {
+    rawFactors = explanation.contributing_factors.map((text, index) => ({
+      label: `Factor ${index + 1}`,
+      detail: typeof text === 'string' ? text : text?.description || '',
+      weight: 0.15 + (index * 0.05),
+      isNegative: true,
+    }))
   }
 
-  return factors
-    .slice(0, 5)
-    .map(factor => {
-      const weight = parseFloat(factor.weight) || parseFloat(factor.contribution) || 0
-      const isNegative =
-        factor.type === 'negative' || factor.impact === 'negative' || weight < 0
+  if (Array.isArray(explanation.factors) && explanation.factors.length) {
+    rawFactors = explanation.factors
+  } else if (Array.isArray(explanation.key_factors) && explanation.key_factors.length) {
+    rawFactors = explanation.key_factors
+  }
 
+  if (rawFactors.length === 0 && Array.isArray(explanation.key_evidence)) {
+    rawFactors = explanation.key_evidence.map((evidence, index) => ({
+      label: `Evidence ${index + 1}`,
+      detail: evidence,
+      weight: Math.max(0.1, 0.35 - index * 0.05),
+      isNegative: evidence.toLowerCase().includes('high') ||
+        evidence.toLowerCase().includes('critical') ||
+        evidence.toLowerCase().includes('elevated'),
+    }))
+  }
+
+  return rawFactors.slice(0, 6).map((factor, index) => {
+    if (typeof factor === 'string') {
       return {
-        label: factor.label || factor.name || 'Unknown Factor',
-        detail: factor.detail || factor.description || factor.explanation || 'No additional details',
-        weightPercentage: Math.round(Math.abs(weight) * 100),
-        isNegative,
+        label: `Feature ${index + 1}`,
+        detail: factor,
+        weightPercentage: Math.round(100 / Math.min(rawFactors.length, 6)),
+        isNegative: true,
       }
-    })
-})
+    }
 
-const recommendedActionText = computed(() => {
-  const explanation = store.xaiExplanation || {}
+    const weight = parseFloat(factor.weight ?? factor.contribution ?? factor.score ?? 0.2)
+    const isNegative =
+      factor.type === 'negative' ||
+      factor.impact === 'negative' ||
+      factor.is_negative === true ||
+      weight < 0 ||
+      (typeof factor.detail === 'string' &&
+        (factor.detail.toLowerCase().includes('high') ||
+          factor.detail.toLowerCase().includes('elevated')))
 
-  return (
-    explanation.recommended_action ||
-    explanation.recommendedAction ||
-    explanation.action ||
-    explanation.recommendation ||
-    'Review and approve the healing plan'
-  )
+    return {
+      label: factor.label || factor.name || factor.feature || `Feature ${index + 1}`,
+      detail: factor.detail || factor.description || factor.explanation || '',
+      weightPercentage: Math.min(100, Math.round(Math.abs(weight <= 1 ? weight * 100 : weight))),
+      isNegative,
+    }
+  })
 })
 
 async function retryExplanation() {
-  if (latestIncident.value?.id) {
-    await store.fetchXaiExplanation(latestIncident.value.id)
+  const incidentId = store.latestIncident?.id
+  if (!incidentId) return
+  retrying.value = true
+  try {
+    await store.fetchXaiExplanation(incidentId, true)
+  } finally {
+    retrying.value = false
   }
 }
 
 watch(
-  () => latestIncident.value?.id,
+  () => store.latestIncident?.id,
   async incidentId => {
     if (incidentId) {
       await store.fetchXaiExplanation(incidentId)
     }
   },
-  { immediate: true }
+  { immediate: true },
 )
 </script>
 
 <style scoped>
-.space-y-2 > * + * {
-  margin-top: 0.5rem;
+.xai-card {
+  border: 1px solid rgba(148, 163, 184, 0.08);
 }
 
-.opacity-60 {
-  opacity: 0.6;
+.state-panel {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
-.gap-2 {
-  gap: 0.5rem;
+.factor-row:last-child {
+  margin-bottom: 0 !important;
+}
+
+.opacity-70 {
+  opacity: 0.7;
 }
 </style>

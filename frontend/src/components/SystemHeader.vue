@@ -1,54 +1,70 @@
 ﻿<template>
-  <!-- 1. Entire app bar hidden until authentication is verified -->
   <v-app-bar v-if="store.authenticated" flat density="comfortable" class="header-bar">
-    
-    <!-- 2. Branded Logo Framing: Directly embedded (Avatar removed) -->
     <v-img
       :src="logoUrl"
       alt="NeuroSynapse"
-      max-height="50"
-      max-width="140"
+      max-height="40"
+      max-width="120"
       contain
-      class="ml-3"
+      class="ml-4 mr-2 flex-grow-0"
     />
 
-    <!-- 3. Centered Operator Profile: Minimalist icon + username -->
-    <div class="center-content d-flex align-center">
-      <v-icon icon="mdi-account-circle" class="me-2" />
-      <span class="text-body-2 text-truncate" style="max-width: 200px; max-height: 60px;">
-        {{ store.username }}
-      </span>
-    </div>
+    <span class="text-h6 font-weight-bold text-primary text-no-wrap">NeuroSynapse</span>
 
-    <!-- 4. Action Navigation (Right-Aligned) -->
     <v-spacer />
-    <div class="d-flex align-center ga-3 me-3">
-      <v-chip 
-        :color="statusColor" 
-        text-color="white" 
-        size="small" 
+
+    <div class="d-flex align-center ga-2 ga-sm-3 mr-3 mr-sm-4">
+      <v-chip
+        :color="healthChipColor"
+        size="small"
         variant="tonal"
-        class="text-uppercase font-weight-medium"
+        class="font-weight-medium"
+        prepend-icon="mdi-heart-pulse"
       >
-        <v-icon start :icon="statusIcon" size="18"></v-icon>
-        {{ statusText }}
+        {{ healthChipLabel }}
       </v-chip>
-      
-      <!-- Explicit, clean Sign Out icon button -->
-      <v-btn 
-        icon="mdi-logout" 
-        variant="text" 
-        color="white" 
-        density="compact" 
+
+      <v-chip
+        :color="store.openIncidents > 0 ? 'error' : 'success'"
+        size="small"
+        variant="tonal"
+        class="font-weight-medium"
+        prepend-icon="mdi-alert-octagon-outline"
+      >
+        {{ store.openIncidents }} Open
+      </v-chip>
+
+      <v-chip
+        color="cyan"
+        size="small"
+        variant="tonal"
+        class="font-weight-medium d-none d-sm-flex"
+        prepend-icon="mdi-check-decagram"
+      >
+        {{ store.healedToday }} Healed Today
+      </v-chip>
+
+      <v-divider vertical class="mx-1 d-none d-md-flex" />
+
+      <div class="d-none d-md-flex align-center text-body-2 text-medium-emphasis">
+        <v-icon icon="mdi-account-circle" size="20" class="mr-1" />
+        <span class="text-truncate" style="max-width: 140px">{{ store.username }}</span>
+      </div>
+
+      <v-btn
+        icon="mdi-logout"
+        variant="text"
+        color="secondary"
+        density="comfortable"
+        aria-label="Sign out"
         @click="handleLogout"
       />
     </div>
-
   </v-app-bar>
 </template>
 
 <script setup>
-import { computed, nextTick } from 'vue' // Added nextTick
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNetworkStore } from '@/stores/network'
 import logoUrl from '@/assets/NeuroSynapse-web-logo.png'
@@ -56,69 +72,43 @@ import logoUrl from '@/assets/NeuroSynapse-web-logo.png'
 const store = useNetworkStore()
 const router = useRouter()
 
-const statusColor = computed(() => {
+const healthChipColor = computed(() => {
   switch (store.overallHealth) {
-    case 'HEALTHY': return 'cyan accent-4'
-    case 'WARNING': return 'amber accent-4'
-    case 'CRITICAL': return 'red darken-2'
-    default: return 'grey'
+    case 'HEALTHY':
+      return 'success'
+    case 'WARNING':
+      return 'warning'
+    case 'CRITICAL':
+      return 'error'
+    default:
+      return 'secondary'
   }
 })
 
-const statusIcon = computed(() => {
+const healthChipLabel = computed(() => {
   switch (store.overallHealth) {
-    case 'HEALTHY': return 'mdi-check-circle'
-    case 'WARNING': return 'mdi-alert'
-    case 'CRITICAL': return 'mdi-alert-circle'
-    default: return 'mdi-help-circle'
+    case 'HEALTHY':
+      return 'Telemetry Healthy'
+    case 'WARNING':
+      return 'Telemetry Degraded'
+    case 'CRITICAL':
+      return 'Incident Active'
+    default:
+      return 'Status Unknown'
   }
 })
 
-const statusText = computed(() => {
-  switch (store.overallHealth) {
-    case 'HEALTHY': return 'SYSTEM HEALTHY'
-    case 'WARNING': return 'WARNING'
-    case 'CRITICAL': return 'INCIDENT ACTIVE'
-    default: return 'UNKNOWN'
-  }
-})
-
-// Fixed Logout Logic
 async function handleLogout() {
-  // Step 1: Force clear local storage/persisted state manually (Prevents pinia re-hydration)
-  localStorage.removeItem('YOUR_AUTH_TOKEN_NAME') // IMPORTANT: Replace with your actual localStorage key
-  sessionStorage.clear()
-
-  // Step 2: Execute store logout
+  store.stopAutoRefresh()
   await store.logout()
-
-  // Step 3: Wait for Vue to flush the v-if reactivity
-  await nextTick()
-
-  // Step 4: Route to login
   router.push({ name: 'login' })
-
-  // OPTIONAL (GUARANTEED FIX):
-  // If the above still forces you to refresh, uncomment the line below. 
-  // This is the most reliable way to completely clean an SPA session on logout:
-  // window.location.reload() 
 }
 </script>
 
 <style scoped>
 .header-bar {
-  /* Use !important to override potential Vuetify theme defaults */
-  background: #0b1220 !important; 
+  background: rgba(11, 18, 32, 0.95) !important;
+  backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
-  position: relative;
-}
-
-.center-content {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  color: #ffffff;
-  z-index: 1; /* Ensure it sits above potential overlay overlaps */
-  pointer-events: none; /* Prevents the text from blocking the click on the header itself */
 }
 </style>

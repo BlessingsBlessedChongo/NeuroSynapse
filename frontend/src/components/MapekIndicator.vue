@@ -1,40 +1,41 @@
 <template>
-  <v-card color="surface" elevation="2">
-    <v-card-title>
-      <v-icon icon="mdi-sync-circle" class="mr-2 text-primary"></v-icon>
-      MAPE-K Loop Status
+  <v-card color="surface" elevation="2" class="mapek-card h-100">
+    <v-card-title class="d-flex align-center">
+      <v-icon icon="mdi-sync-circle" class="mr-2 text-primary" />
+      MAPE-K Autonomic Loop
     </v-card-title>
 
-    <v-card-subtitle class="text-secondary">
-      Autonomic Control Cycle Phase
+    <v-card-subtitle class="text-medium-emphasis pb-2">
+      Real-time execution stage of the self-healing control cycle
     </v-card-subtitle>
 
     <v-card-text>
-      <v-timeline align="start" side="end" density="compact">
+      <v-timeline side="end" align="start" density="compact" truncate-line="both">
         <v-timeline-item
           v-for="phase in phases"
           :key="phase.id"
-          :dot-color="phase.active ? 'primary' : 'rgb(75, 85, 99)'"
-          :size="phase.active ? 'large' : 'small'"
+          :dot-color="phase.active ? 'cyan' : 'grey-darken-2'"
+          :size="phase.active ? 'default' : 'x-small'"
           fill-dot
         >
-          <template v-slot:icon>
+          <template #icon>
             <v-icon
               :icon="phase.icon"
-              :color="phase.active ? 'white' : 'rgb(148, 163, 184)'"
-              :class="{ 'animate-spin': phase.active }"
-            ></v-icon>
+              :color="phase.active ? '#0f172a' : 'rgba(148, 163, 184, 0.7)'"
+              :size="phase.active ? 22 : 16"
+              :class="{ 'phase-icon-active': phase.active }"
+            />
           </template>
 
           <div class="d-flex align-center justify-space-between">
             <div>
               <div
-                class="font-weight-bold text-body-2"
-                :class="phase.active ? 'text-primary' : 'text-secondary'"
+                class="text-body-2 font-weight-bold"
+                :class="phase.active ? 'text-cyan' : 'text-medium-emphasis'"
               >
-                {{ phase.number }}. {{ phase.label }}
+                Phase {{ phase.number }} — {{ phase.label }}
               </div>
-              <div class="text-caption text-secondary mt-1">
+              <div class="text-caption text-medium-emphasis mt-1">
                 {{ phase.description }}
               </div>
             </div>
@@ -42,9 +43,9 @@
             <v-chip
               v-if="phase.active"
               size="x-small"
-              color="primary"
+              color="cyan"
               variant="flat"
-              class="ml-3"
+              class="ml-3 font-weight-bold"
               prepend-icon="mdi-radiobox-marked"
             >
               ACTIVE
@@ -53,37 +54,20 @@
         </v-timeline-item>
       </v-timeline>
 
-      <v-alert variant="tonal" color="surface" class="mt-6 py-3">
-        <div class="d-flex align-center justify-space-between">
+      <v-alert
+        variant="tonal"
+        :color="activePhase === 4 ? 'success' : activePhase === 0 ? 'info' : 'cyan'"
+        density="comfortable"
+        class="mt-4"
+      >
+        <div class="d-flex align-center justify-space-between flex-wrap ga-2">
           <div>
-            <div class="text-caption text-secondary mb-1">Current loop phase</div>
-            <div class="text-body-2 font-weight-medium">{{ activePhaseLabel }}</div>
+            <div class="text-caption text-medium-emphasis mb-1">Current Loop Phase</div>
+            <div class="text-body-2 font-weight-bold">{{ activePhaseLabel }}</div>
           </div>
-          <div class="text-caption text-secondary">
-            {{ activePhaseHint }}
-          </div>
+          <div class="text-caption text-medium-emphasis">{{ activePhaseHint }}</div>
         </div>
       </v-alert>
-
-      <v-divider class="my-6"></v-divider>
-
-      <v-row dense>
-        <v-col cols="12" sm="6">
-          <div class="text-caption text-secondary text-uppercase font-weight-bold mb-2">
-            <v-icon icon="mdi-alert-circle" size="16" class="mr-1"></v-icon>
-            Open Incidents
-          </div>
-          <div class="text-h6 font-weight-bold text-error">{{ store.openIncidents }}</div>
-        </v-col>
-
-        <v-col cols="12" sm="6">
-          <div class="text-caption text-secondary text-uppercase font-weight-bold mb-2">
-            <v-icon icon="mdi-check-circle" size="16" class="mr-1"></v-icon>
-            Healed Today
-          </div>
-          <div class="text-h6 font-weight-bold text-success">{{ store.healedToday }}</div>
-        </v-col>
-      </v-row>
     </v-card-text>
   </v-card>
 </template>
@@ -95,47 +79,55 @@ import { useNetworkStore } from '@/stores/network'
 const store = useNetworkStore()
 
 const activePhase = computed(() => {
-  const openIncidents = store.openIncidents
-  const latestIncident = store.latestIncident
+  const hasExecutingHealing = store.recentHealings.some(
+    h => h.status === 'Executing',
+  )
 
-  // Phase 0 (MONITOR): Default state when no active incidents
-  // This resets from KNOWLEDGE phase if all incidents are resolved
-  if (openIncidents === 0) {
+  if (hasExecutingHealing) {
+    return 3
+  }
+
+  const openIncidents = store.latestIncidents.filter(incident => {
+    const status = incident.status || ''
+    return !['Healed', 'Failed', 'Rolled Back'].includes(status)
+  })
+
+  const hasPlanPhase = openIncidents.some(incident => {
+    const status = incident.status || ''
+    return status === 'Ready for Action' || status === 'Manual Review'
+  })
+
+  if (hasPlanPhase) {
+    return 2
+  }
+
+  const hasAnalyzePhase = openIncidents.some(incident => {
+    const status = incident.status || ''
+    return status === 'Detected' || status === 'Diagnosing'
+  })
+
+  if (hasAnalyzePhase) {
+    return 1
+  }
+
+  if (store.openIncidents === 0 && store.healedToday > 0) {
+    return 4
+  }
+
+  if (store.openIncidents === 0 && store.healedToday === 0) {
     return 0
   }
 
-  // Phase detection based on latest incident status
-  if (latestIncident) {
-    const status = latestIncident.status?.toLowerCase() || ''
-
-    // Phase 1 (ANALYZE): Detecting and diagnosing
-    if (status.includes('detected') || status.includes('detecting') || status.includes('analyzing')) {
-      return 1
-    }
-
-    // Phase 2 (PLAN): Planning remediation
-    if (status.includes('manual') || status.includes('ready') || status.includes('planned')) {
-      return 2
-    }
-
-    // Phase 3 (EXECUTE): Healing in progress
-    if (status.includes('executing') || status.includes('healing')) {
-      return 3
-    }
-  }
-
-  // Return to MONITOR if no incidents
   return 0
 })
 
-const phases = computed(() => [
+const phaseDefinitions = [
   {
     id: 'monitor',
     number: 0,
     label: 'MONITOR',
-    description: 'Continuously observing telemetry, topology and device health.',
+    description: 'Continuously observing telemetry, topology, and device health.',
     icon: 'mdi-eye',
-    active: activePhase.value === 0,
   },
   {
     id: 'analyze',
@@ -143,71 +135,76 @@ const phases = computed(() => [
     label: 'ANALYZE',
     description: 'Detecting anomalies and diagnosing root causes.',
     icon: 'mdi-brain',
-    active: activePhase.value === 1,
   },
   {
     id: 'plan',
     number: 2,
     label: 'PLAN',
-    description: 'Planning remediation actions and awaiting approval.',
-    icon: 'mdi-lightbulb-on',
-    active: activePhase.value === 2,
+    description: 'Planning remediation actions and awaiting operator validation.',
+    icon: 'mdi-cog',
   },
   {
     id: 'execute',
     number: 3,
     label: 'EXECUTE',
-    description: 'Executing healing actions across the network.',
+    description: 'Executing healing actions across the network fabric.',
     icon: 'mdi-flash',
-    active: activePhase.value === 3,
   },
   {
     id: 'knowledge',
     number: 4,
     label: 'KNOWLEDGE',
-    description: 'Learning from resolved incidents for future improvements.',
+    description: 'Learning from resolved incidents to improve future responses.',
     icon: 'mdi-check-decagram',
-    active: activePhase.value === 4,
   },
-])
+]
 
-const activePhaseLabel = computed(() => phases.value.find(p => p.active)?.label || 'MONITOR')
+const phases = computed(() =>
+  phaseDefinitions.map(phase => ({
+    ...phase,
+    active: activePhase.value === phase.number,
+  })),
+)
+
+const activePhaseLabel = computed(
+  () => phaseDefinitions.find(p => p.number === activePhase.value)?.label || 'MONITOR',
+)
 
 const activePhaseHint = computed(() => {
   switch (activePhase.value) {
     case 1:
-      return 'Incident detection and diagnosis in progress.'
+      return 'Incident detection and AI diagnosis in progress.'
     case 2:
-      return 'Healing plan prepared and awaiting validation.'
+      return 'Healing plan prepared — awaiting approval or review.'
     case 3:
-      return 'Automated remediation actions are running.'
+      return 'Automated remediation scripts are executing.'
     case 4:
-      return 'Resolved incidents are feeding system learning.'
+      return 'Resolved incidents are feeding the knowledge base.'
     default:
-      return 'System is monitoring network health.'
+      return 'System is monitoring network health with no active anomalies.'
   }
 })
 </script>
 
 <style scoped>
-@keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.mapek-card {
+  border: 1px solid rgba(148, 163, 184, 0.08);
 }
 
-.animate-spin {
-  animation: spin 2s linear infinite;
+.text-cyan {
+  color: #00e5ff !important;
+}
+
+.phase-icon-active {
+  transform: scale(1.15);
+  filter: drop-shadow(0 0 6px rgba(0, 229, 255, 0.6));
 }
 
 :deep(.v-timeline-item__dot) {
-  transition: all 0.25s ease;
+  transition: all 0.3s ease;
 }
 
-:deep(.v-timeline-item__dot.primary) {
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+:deep(.v-timeline-item__dot.bg-cyan) {
+  box-shadow: 0 0 0 4px rgba(0, 229, 255, 0.2);
 }
 </style>

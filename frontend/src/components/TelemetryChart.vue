@@ -1,40 +1,47 @@
 <template>
-  <v-card color="surface" elevation="2">
-    <v-card-title>
-      <v-icon icon="mdi-chart-line" class="mr-2 text-info"></v-icon>
+  <v-card color="surface" elevation="2" class="telemetry-card">
+    <v-card-title class="d-flex align-center">
+      <v-icon icon="mdi-chart-line" class="mr-2 text-info" />
       Real-Time Telemetry
     </v-card-title>
 
-    <v-card-subtitle class="text-secondary">
-      System‑wide averages (updated every 2 seconds)
+    <v-card-subtitle class="text-medium-emphasis pb-2">
+      System-wide averages — rolling 30-point window (refreshed every 2 seconds)
     </v-card-subtitle>
 
     <v-card-text>
-      <!-- Error state -->
-      <div v-if="store.telemetryError" class="text-center py-8">
-        <v-icon icon="mdi-alert-circle" size="40" color="error" class="mb-3"></v-icon>
-        <div class="text-body-2 text-error mb-4">{{ store.telemetryError }}</div>
-        <v-btn size="small" variant="outlined" @click="retryTelemetry">
+      <div v-if="store.telemetryError" class="state-panel text-center py-10">
+        <v-icon icon="mdi-alert-circle-outline" size="48" color="error" class="mb-4" />
+        <p class="text-body-1 text-error mb-2">{{ store.telemetryError }}</p>
+        <v-btn
+          variant="outlined"
+          color="primary"
+          prepend-icon="mdi-refresh"
+          :loading="retrying"
+          @click="retryTelemetry"
+        >
           Retry
         </v-btn>
       </div>
 
-      <!-- Loading state -->
-      <div v-else-if="store.telemetryHistory.length === 0" class="text-center py-20">
-        <v-progress-circular indeterminate color="primary" size="48" class="mb-4"></v-progress-circular>
-        <div class="text-body-2 text-secondary">Collecting telemetry data…</div>
+      <div v-else-if="isInitialLoading" class="state-panel text-center py-10">
+        <v-progress-circular indeterminate color="primary" size="52" width="4" class="mb-4" />
+        <p class="text-body-2 text-medium-emphasis">Collecting telemetry data…</p>
       </div>
 
-      <!-- Chart -->
       <div v-else class="chart-container">
-        <Line :data="chartData" :options="chartOptions" :plugins="[shadowPlugin]" />
+        <Line
+          ref="chartRef"
+          :data="chartData"
+          :options="chartOptions"
+        />
       </div>
     </v-card-text>
   </v-card>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -57,94 +64,75 @@ ChartJS.register(
   Title,
   Tooltip,
   Legend,
-  Filler
+  Filler,
 )
 
 const store = useNetworkStore()
-const MAX_POINTS = 30
+const chartRef = ref(null)
+const retrying = ref(false)
 
-function formatTelemetryLabels(telemetryHistory) {
-  return telemetryHistory.map(point => {
+const COLORS = {
+  cpu: '#00E5FF',
+  memory: '#E040FB',
+  packetLoss: '#FF5252',
+}
+
+const isInitialLoading = computed(
+  () => !store.telemetryError && store.telemetryHistory.length === 0,
+)
+
+function formatLabels(history) {
+  return history.map(point => {
     try {
-      const date = new Date(point.timestamp)
-      return date.toLocaleTimeString([], {
+      return new Date(point.timestamp).toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
       })
-    } catch (e) {
+    } catch {
       return '--:--:--'
     }
   })
 }
 
-async function retryTelemetry() {
-  try {
-    await store.fetchTelemetry()
-    console.log('Telemetry retry - fetched', store.telemetryHistory.length, 'points')
-  } catch (error) {
-    console.error('Retry failed:', error)
-  }
-}
-
 const chartData = computed(() => {
-  const points = store.telemetryHistory || []
-  
-  if (points.length === 0) {
-    return {
-      labels: [],
-      datasets: [
-        { label: 'CPU Usage (%)', data: [], borderColor: '#2CB5E6' },
-        { label: 'Memory Usage (%)', data: [], borderColor: '#103B78' },
-        { label: 'Packet Loss (%)', data: [], borderColor: '#FF5252' },
-      ],
-    }
-  }
+  const points = store.telemetryHistory.slice(-30)
 
   return {
-    labels: formatTelemetryLabels(points),
+    labels: formatLabels(points),
     datasets: [
       {
         label: 'CPU Usage (%)',
-        data: points.map(p => p.cpu_usage || 0),
-        borderColor: '#2CB5E6',
-        backgroundColor: 'rgba(44, 181, 230, 0.1)',
+        data: points.map(p => p.cpu_usage ?? 0),
+        borderColor: COLORS.cpu,
+        backgroundColor: 'rgba(0, 229, 255, 0.04)',
         tension: 0.4,
         fill: true,
         pointRadius: 0,
         pointHoverRadius: 6,
         borderWidth: 3,
-        segment: {
-          borderColor: ctx => '#2CB5E6',
-        },
       },
       {
         label: 'Memory Usage (%)',
-        data: points.map(p => p.memory_usage || 0),
-        borderColor: '#103B78',
-        backgroundColor: 'rgba(16, 59, 120, 0.1)',
+        data: points.map(p => p.memory_usage ?? 0),
+        borderColor: COLORS.memory,
+        backgroundColor: 'rgba(224, 64, 251, 0.04)',
         tension: 0.4,
         fill: true,
         pointRadius: 0,
         pointHoverRadius: 6,
         borderWidth: 3,
-        segment: {
-          borderColor: ctx => '#103B78',
-        },
       },
       {
         label: 'Packet Loss (%)',
-        data: points.map(p => p.packet_loss || 0),
-        borderColor: '#FF5252',
-        backgroundColor: 'rgba(255, 82, 82, 0.1)',
+        data: points.map(p => p.packet_loss ?? 0),
+        borderColor: COLORS.packetLoss,
+        backgroundColor: 'rgba(255, 82, 82, 0.04)',
         tension: 0.4,
         fill: true,
         pointRadius: 0,
         pointHoverRadius: 6,
         borderWidth: 3,
-        segment: {
-          borderColor: ctx => '#FF5252',
-        },
       },
     ],
   }
@@ -153,6 +141,17 @@ const chartData = computed(() => {
 const chartOptions = {
   responsive: true,
   maintainAspectRatio: false,
+  animation: {
+    duration: 600,
+    easing: 'easeOutQuart',
+  },
+  transitions: {
+    active: {
+      animation: {
+        duration: 400,
+      },
+    },
+  },
   interaction: {
     intersect: false,
     mode: 'index',
@@ -164,39 +163,22 @@ const chartOptions = {
         color: '#94a3b8',
         usePointStyle: true,
         pointStyle: 'circle',
-        padding: 20,
-        font: {
-          size: 13,
-          weight: '500',
-        },
+        padding: 18,
+        font: { size: 12, weight: '600' },
       },
     },
     tooltip: {
-      backgroundColor: '#0f172a',
+      backgroundColor: 'rgba(15, 23, 42, 0.95)',
       titleColor: '#f1f5f9',
       bodyColor: '#cbd5e1',
-      borderColor: '#334155',
+      borderColor: 'rgba(51, 65, 85, 0.8)',
       borderWidth: 1,
       padding: 12,
-      displayColors: true,
-      boxPadding: 8,
-      titleFont: {
-        size: 13,
-        weight: 'bold',
-      },
-      bodyFont: {
-        size: 12,
-      },
       callbacks: {
-        label: function(context) {
-          let label = context.dataset.label || ''
-          if (label) {
-            label += ': '
-          }
-          if (context.parsed.y !== null) {
-            label += context.parsed.y.toFixed(1) + '%'
-          }
-          return label
+        label(context) {
+          const label = context.dataset.label || ''
+          const value = context.parsed.y
+          return `${label}: ${value?.toFixed(1) ?? 0}%`
         },
       },
     },
@@ -207,48 +189,63 @@ const chartOptions = {
       max: 100,
       grid: {
         color: 'rgba(148, 163, 184, 0.1)',
-        drawBorder: true,
       },
       ticks: {
         color: '#94a3b8',
-        font: {
-          size: 12,
-        },
-        callback: function(value) {
-          return value + '%'
-        },
+        callback: value => `${value}%`,
       },
     },
     x: {
       grid: {
-        color: 'rgba(148, 163, 184, 0.08)',
-        drawBorder: false,
+        color: 'rgba(148, 163, 184, 0.06)',
       },
       ticks: {
         color: '#94a3b8',
-        font: {
-          size: 12,
-        },
+        maxRotation: 0,
+        autoSkip: true,
+        maxTicksLimit: 10,
       },
     },
   },
 }
 
-const shadowPlugin = {
-  id: 'shadowPlugin',
-  afterDraw(chart) {
-    const ctx = chart.ctx
-    ctx.save()
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.15)'
-    ctx.fillRect(0, 0, chart.width, chart.height)
-    ctx.restore()
+watch(
+  () => store.telemetryHistory,
+  () => {
+    const chart = chartRef.value?.chart
+    if (chart) {
+      chart.update('none')
+    }
   },
+  { deep: true },
+)
+
+async function retryTelemetry() {
+  retrying.value = true
+  try {
+    await store.fetchTelemetry()
+  } finally {
+    retrying.value = false
+  }
 }
 </script>
 
 <style scoped>
+.telemetry-card {
+  border: 1px solid rgba(148, 163, 184, 0.08);
+}
+
 .chart-container {
   position: relative;
-  min-height: 400px;
+  min-height: 380px;
+  height: 380px;
+}
+
+.state-panel {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 </style>

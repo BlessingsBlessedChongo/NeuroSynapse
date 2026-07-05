@@ -1,121 +1,129 @@
 <template>
-  <v-card color="surface" elevation="2" class="h-100">
-    <v-card-title>
-      <v-icon icon="mdi-alert-octagon" class="mr-2 text-error"></v-icon>
+  <v-card color="surface" elevation="2" class="incident-card h-100">
+    <v-card-title class="d-flex align-center">
+      <v-icon icon="mdi-alert-octagon" class="mr-2 text-error" />
       Active Incidents
+      <v-spacer />
+      <v-chip
+        v-if="store.openIncidents > 0"
+        size="small"
+        color="error"
+        variant="tonal"
+      >
+        {{ store.openIncidents }} open
+      </v-chip>
     </v-card-title>
 
     <v-card-text>
-      <!-- Empty state -->
-      <div v-if="store.latestIncidents.length === 0" class="text-center py-12">
-        <v-icon icon="mdi-shield-check" size="64" color="success" class="mb-3"></v-icon>
-        <div class="text-body-2 text-secondary">No incidents detected</div>
-        <div class="text-caption text-secondary mt-1">System is operating normally</div>
+      <div v-if="store.loading && store.latestIncidents.length === 0" class="state-panel text-center py-10">
+        <v-progress-circular indeterminate color="primary" size="44" class="mb-3" />
+        <p class="text-body-2 text-medium-emphasis">Loading incident records…</p>
       </div>
 
-      <!-- Loading state -->
-      <div v-else-if="store.loading" class="text-center py-8">
-        <v-progress-circular indeterminate color="primary" size="40" class="mb-3"></v-progress-circular>
-        <div class="text-body-2 text-secondary">Loading incidents...</div>
+      <div v-else-if="store.error && store.latestIncidents.length === 0" class="state-panel text-center py-10">
+        <v-icon icon="mdi-alert-circle-outline" size="44" color="error" class="mb-3" />
+        <p class="text-body-2 text-error mb-4">{{ store.error }}</p>
+        <v-btn variant="outlined" color="primary" size="small" @click="store.fetchStatus()">
+          Retry
+        </v-btn>
       </div>
 
-      <!-- Incidents table -->
-      <v-table v-else density="compact" hover class="bg-transparent">
-        <thead>
-          <tr>
-            <th class="text-left text-caption text-secondary">Type</th>
-            <th class="text-left text-caption text-secondary">Device</th>
-            <th class="text-left text-caption text-secondary">Status</th>
-            <th class="text-left text-caption text-secondary">Confidence</th>
-            <th class="text-left text-caption text-secondary">Detected</th>
-            <th class="text-center text-caption text-secondary">Actions</th>
-          </tr>
-        </thead>
+      <div v-else-if="store.latestIncidents.length === 0" class="state-panel text-center py-10">
+        <v-icon icon="mdi-shield-check" size="56" color="success" class="mb-3 opacity-70" />
+        <p class="text-body-1 font-weight-medium">No incidents detected</p>
+        <p class="text-caption text-medium-emphasis">System is operating within normal parameters</p>
+      </div>
 
-        <tbody>
-          <tr v-for="incident in store.latestIncidents" :key="incident.id">
-            <!-- Incident Type -->
-            <td class="text-left">
-              <v-chip
-                :color="getIncidentTypeColor(incident.type)"
-                size="small"
-                variant="flat"
-                class="font-weight-medium"
-              >
-                {{ formatIncidentType(incident.type) }}
-              </v-chip>
-            </td>
+      <v-data-table
+        v-else
+        :headers="headers"
+        :items="store.latestIncidents"
+        item-value="id"
+        density="compact"
+        hover
+        class="incident-table bg-transparent"
+        :items-per-page="10"
+        hide-default-footer
+      >
+        <template #item.type="{ item }">
+          <v-chip
+            :color="getIncidentTypeColor(item.type)"
+            size="small"
+            variant="flat"
+            class="font-weight-medium"
+          >
+            {{ formatIncidentType(item.type) }}
+          </v-chip>
+        </template>
 
-            <!-- Device -->
-            <td class="text-left">
-              <div class="text-body-2 font-weight-medium">{{ incident.device || 'Unknown' }}</div>
-            </td>
+        <template #item.device="{ item }">
+          <span class="text-body-2 font-weight-medium">{{ item.device || 'Unknown' }}</span>
+        </template>
 
-            <!-- Status -->
-            <td class="text-left">
-              <v-chip
-                :color="getStatusColor(incident.status)"
-                size="x-small"
-                variant="tonal"
-              >
-                {{ incident.status || 'Unknown' }}
-              </v-chip>
-            </td>
+        <template #item.status="{ item }">
+          <v-chip
+            :color="getStatusColor(item.status)"
+            size="x-small"
+            variant="tonal"
+          >
+            {{ item.status || 'Unknown' }}
+          </v-chip>
+        </template>
 
-            <!-- Confidence -->
-            <td class="text-left">
-              <div class="d-flex align-center gap-1">
-                <v-progress-linear
-                  :model-value="getConfidencePercentage(incident.confidence)"
-                  :color="getConfidenceColor(incident.confidence)"
-                  height="4"
-                  style="min-width: 60px; max-width: 80px"
-                ></v-progress-linear>
-                <span class="text-caption text-secondary" style="min-width: 40px">
-                  {{ getConfidencePercentage(incident.confidence) }}%
-                </span>
-              </div>
-            </td>
+        <template #item.confidence="{ item }">
+          <div class="d-flex align-center ga-2">
+            <v-progress-linear
+              :model-value="getConfidencePercentage(item.confidence)"
+              :color="getConfidenceColor(item.confidence)"
+              height="5"
+              rounded
+              style="min-width: 64px; max-width: 80px"
+            />
+            <span class="text-caption text-medium-emphasis">
+              {{ getConfidencePercentage(item.confidence) }}%
+            </span>
+          </div>
+        </template>
 
-            <!-- Detected Time -->
-            <td class="text-left">
-              <div class="text-caption text-secondary">{{ formatDetectedTime(incident.detected_at) }}</div>
-            </td>
+        <template #item.detected_at="{ item }">
+          <span class="text-caption text-medium-emphasis">
+            {{ formatDetectedTime(item.detected_at) }}
+          </span>
+        </template>
 
-            <!-- Actions -->
-            <td class="text-center">
-              <!-- Manual Review Actions -->
-              <div v-if="incident.status === 'Manual Review'" class="d-flex justify-center gap-1">
-                <v-btn
-                  size="x-small"
-                  color="success"
-                  variant="tonal"
-                  :loading="approvingId === incident.id"
-                  @click="approveHealing(incident.id)"
-                  prepend-icon="mdi-check"
-                >
-                  Approve
-                </v-btn>
-                <v-btn
-                  size="x-small"
-                  color="error"
-                  variant="tonal"
-                  :loading="rejectingId === incident.id"
-                  @click="rejectHealing(incident.id)"
-                  prepend-icon="mdi-close"
-                >
-                  Reject
-                </v-btn>
-              </div>
-
-              <!-- Other states: info icon only -->
-              <div v-else class="d-flex justify-center">
-                <v-icon size="small" color="secondary" icon="mdi-information-outline"></v-icon>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </v-table>
+        <template #item.actions="{ item }">
+          <div v-if="item.status === 'Manual Review'" class="d-flex flex-wrap ga-1 justify-center">
+            <v-btn
+              size="x-small"
+              color="success"
+              variant="flat"
+              prepend-icon="mdi-check-circle"
+              :loading="approvingId === item.id"
+              :disabled="rejectingId === item.id"
+              @click="handleApprove(item.id)"
+            >
+              Approve Healing
+            </v-btn>
+            <v-btn
+              size="x-small"
+              color="error"
+              variant="flat"
+              prepend-icon="mdi-close-circle"
+              :loading="rejectingId === item.id"
+              :disabled="approvingId === item.id"
+              @click="handleReject(item.id)"
+            >
+              Reject/Isolate
+            </v-btn>
+          </div>
+          <v-icon
+            v-else
+            icon="mdi-information-outline"
+            size="18"
+            color="secondary"
+          />
+        </template>
+      </v-data-table>
     </v-card-text>
   </v-card>
 </template>
@@ -128,53 +136,64 @@ const store = useNetworkStore()
 const approvingId = ref(null)
 const rejectingId = ref(null)
 
+const headers = [
+  { title: 'Type', key: 'type', sortable: false },
+  { title: 'Device', key: 'device', sortable: false },
+  { title: 'Status', key: 'status', sortable: false },
+  { title: 'Confidence', key: 'confidence', sortable: false },
+  { title: 'Detected', key: 'detected_at', sortable: false },
+  { title: 'Actions', key: 'actions', sortable: false, align: 'center' },
+]
+
+function normalizeType(type) {
+  if (!type) return ''
+  return type.toUpperCase().replace(/\s+/g, '_')
+}
+
 function formatIncidentType(type) {
-  if (type === 'SERVICE_CRASH') return 'Service Crash'
-  if (type === 'LINK_FAILURE') return 'Link Failure'
-  if (type === 'DDOS_ATTACK') return 'DDoS Attack'
+  const normalized = normalizeType(type)
+  if (normalized === 'SERVICE_CRASH' || type === 'Service Crash') return 'Service Crash'
+  if (normalized === 'LINK_FAILURE' || type === 'Link Failure') return 'Link Failure'
+  if (normalized === 'DDOS_ATTACK' || type === 'DDoS Attack') return 'DDoS Attack'
   return type || 'Unknown'
 }
 
 function getIncidentTypeColor(type) {
-  if (type === 'SERVICE_CRASH') return 'error'
-  if (type === 'LINK_FAILURE') return 'warning'
-  if (type === 'DDOS_ATTACK') return 'purple'
+  const normalized = normalizeType(type)
+  if (normalized === 'SERVICE_CRASH' || type === 'Service Crash') return 'error'
+  if (normalized === 'LINK_FAILURE' || type === 'Link Failure') return 'warning'
+  if (normalized === 'DDOS_ATTACK' || type === 'DDoS Attack') return 'purple'
   return 'secondary'
 }
 
 function getStatusColor(status) {
   if (!status) return 'secondary'
-
-  const statusLower = status.toLowerCase()
-  if (statusLower.includes('manual')) return 'warning'
-  if (statusLower.includes('executing') || statusLower.includes('healing')) return 'info'
-  if (statusLower.includes('detected') || statusLower.includes('analyzing')) return 'secondary'
-  if (statusLower.includes('resolved')) return 'success'
-
+  const lower = status.toLowerCase()
+  if (lower.includes('manual')) return 'warning'
+  if (lower.includes('executing') || lower.includes('healing')) return 'info'
+  if (lower.includes('detected') || lower.includes('diagnosing')) return 'secondary'
+  if (lower.includes('ready')) return 'cyan'
+  if (lower.includes('healed') || lower.includes('resolved')) return 'success'
   return 'secondary'
 }
 
 function getConfidencePercentage(confidence) {
   if (confidence == null) return 0
-
-  const percentage = Math.round(confidence * 100)
-  return Math.min(100, Math.max(0, percentage))
+  return Math.min(100, Math.max(0, Math.round(confidence * 100)))
 }
 
 function getConfidenceColor(confidence) {
-  const percentage = getConfidencePercentage(confidence)
-  if (percentage >= 80) return 'success'
-  if (percentage >= 60) return 'warning'
+  const pct = getConfidencePercentage(confidence)
+  if (pct >= 80) return 'success'
+  if (pct >= 60) return 'warning'
   return 'error'
 }
 
 function formatDetectedTime(isoString) {
   if (!isoString) return '--'
-
   try {
     const date = new Date(isoString)
-    const now = new Date()
-    const diffMs = now - date
+    const diffMs = Date.now() - date.getTime()
     const diffSecs = Math.floor(diffMs / 1000)
     const diffMins = Math.floor(diffSecs / 60)
     const diffHours = Math.floor(diffMins / 60)
@@ -184,15 +203,16 @@ function formatDetectedTime(isoString) {
     if (diffMins < 60) return `${diffMins}m ago`
     if (diffHours < 24) return `${diffHours}h ago`
     return `${diffDays}d ago`
-  } catch (e) {
+  } catch {
     return '--'
   }
 }
 
-async function approveHealing(incidentId) {
-  approvingId.value = incidentId
+async function handleApprove(id) {
+  approvingId.value = id
   try {
-    await store.approveIncident(incidentId)
+    await store.approveHealing(id)
+    await store.fetchStatus()
   } catch (error) {
     console.error('Failed to approve healing:', error)
   } finally {
@@ -200,10 +220,11 @@ async function approveHealing(incidentId) {
   }
 }
 
-async function rejectHealing(incidentId) {
-  rejectingId.value = incidentId
+async function handleReject(id) {
+  rejectingId.value = id
   try {
-    await store.rejectIncident(incidentId)
+    await store.rejectHealing(id)
+    await store.fetchStatus()
   } catch (error) {
     console.error('Failed to reject healing:', error)
   } finally {
@@ -213,15 +234,31 @@ async function rejectHealing(incidentId) {
 </script>
 
 <style scoped>
-.gap-1 {
-  gap: 0.25rem;
+.incident-card {
+  border: 1px solid rgba(148, 163, 184, 0.08);
 }
 
-:deep(.v-table__wrapper) {
-  background-color: transparent;
+.incident-table :deep(.v-data-table__thead th) {
+  font-size: 0.7rem !important;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(148, 163, 184, 0.9) !important;
+  background: transparent !important;
 }
 
-:deep(tbody tr:hover) {
-  background-color: rgba(148, 163, 184, 0.05);
+.incident-table :deep(.v-data-table__tr:hover) {
+  background: rgba(148, 163, 184, 0.05) !important;
+}
+
+.state-panel {
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.opacity-70 {
+  opacity: 0.7;
 }
 </style>

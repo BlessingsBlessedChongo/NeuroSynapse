@@ -152,9 +152,9 @@ export const useNetworkStore = defineStore('network', {
       }
     },
 
-    async fetchXaiExplanation(incidentId) {
+    async fetchXaiExplanation(incidentId, force = false) {
       if (!incidentId) return
-      if (incidentId === this.activeXaiIncidentId && this.xaiExplanation) return
+      if (!force && incidentId === this.activeXaiIncidentId && this.xaiExplanation) return
 
       this.xaiLoading = true
       this.xaiError = null
@@ -171,13 +171,22 @@ export const useNetworkStore = defineStore('network', {
         this.xaiLoading = false
       }
     },
-    async approveIncident(id) {
+    async approveHealing(id) {
       await api.approveHealing(id)
       await this.fetchStatus()
     },
-    async rejectIncident(id) {
+
+    async rejectHealing(id) {
       await api.rejectHealing(id)
       await this.fetchStatus()
+    },
+
+    async approveIncident(id) {
+      return this.approveHealing(id)
+    },
+
+    async rejectIncident(id) {
+      return this.rejectHealing(id)
     },
 
     async checkAuth() {
