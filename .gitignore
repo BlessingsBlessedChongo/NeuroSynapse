@@ -1,0 +1,21 @@
+# Things to EXCLUDE
+venv/
+__pycache__/
+*.py[cod]
+db.sqlite3
+*.log
+frontend/node_modules/
+frontend/dist/
+.env
+*.env
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+ssh_host_key
+ssh_host_key.pub
+
+# DO NOT exclude Docker files
+# docker-compose.yml should be committed
+# frr/ directory should be committed
+# Dockerfile should be committed

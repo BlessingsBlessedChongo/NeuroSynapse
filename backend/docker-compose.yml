@@ -1,0 +1,40 @@
+version: '3.8'
+
+# NeuroSynapse - FRRouting (FRR) integration
+#
+# Runs a real FRR router in a container that NeuroSynapse's backend
+# connects to over SSH (via Netmiko), exactly as it would a physical
+# Cisco/Juniper/MikroTik device. This replaces the in-memory simulator
+# with an actual routing daemon for end-to-end testing on real hardware
+# semantics, while the simulator remains available as a fallback.
+#
+# Usage:
+#   docker compose up -d
+#   python manage.py setup_frr_device
+#   ssh admin@localhost -p 2222   (password: admin)
+
+services:
+  frr-router:
+    image: frrouting/frr:latest
+    container_name: neuro-frr
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    ports:
+      - "2222:22"
+    volumes:
+      - ./frr/daemons:/etc/frr/daemons
+      - ./frr/vtysh.conf:/etc/frr/vtysh.conf
+      - ./frr/init.sh:/init.sh
+    environment:
+      - FRR_USER=admin
+      - FRR_PASSWORD=admin
+    entrypoint: ["/bin/bash", "/init.sh"]
+    restart: unless-stopped
+    networks:
+      - neurosynapse-net
+
+networks:
+  neurosynapse-net:
+    driver: bridge
