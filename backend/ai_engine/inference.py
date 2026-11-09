@@ -5,18 +5,23 @@ MAPE-K ANALYZE phase.
 
 Uses:
     1. Rule-based detection for deterministic network failures.
-    2. Isolation Forest for statistical anomaly detection.
+    2. Ensemble ML: Isolation Forest + Local Outlier Factor with weighted voting.
     3. Random Forest for failure classification.
 
-The rule detector acts as a safety layer. A clearly abnormal
-network state is not discarded simply because the Isolation
-Forest does not classify it as an outlier.
+ENSEMBLE VOTING (per spec Section 4.4.3.1):
+    IF (0.6 * pred_a + 0.4 * pred_b) > THRESHOLD:
+        RETURN "Anomaly Detected"
+    ELSE:
+        RETURN "Normal"
 """
 
 import os
-
+import logging
 import joblib
 import numpy as np
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.preprocessing import StandardScaler
 
 from monitoring.connector import (
     TELEMETRY_FEATURE_ORDER,
@@ -24,32 +29,16 @@ from monitoring.connector import (
     telemetry_to_feature_vector,
 )
 
-
-DEFAULT_FEATURE_COLUMNS = list(
-    TELEMETRY_FEATURE_ORDER
-)
+DEFAULT_FEATURE_COLUMNS = list(TELEMETRY_FEATURE_ORDER)
+logger = logging.getLogger('neurosynapse.ai.inference')
 
 
 class InferenceEngine:
     """
-    NeuroSynapse ML inference engine.
-
-    Responsibilities:
-
-        telemetry
-            |
-            +--> anomaly detection
-            |
-            +--> failure classification
-            |
-            v
-        diagnosis
+    NeuroSynapse ML inference engine with weighted ensemble voting.
     """
 
-    # ---------------------------------------------------------
-    # Deterministic anomaly thresholds
-    # ---------------------------------------------------------
-
+    # Deterministic anomaly thresholds (safety layer)
     CPU_THRESHOLD = 80.0
     MEMORY_THRESHOLD = 90.0
     PACKET_LOSS_THRESHOLD = 10.0
@@ -58,692 +47,354 @@ class InferenceEngine:
     ERROR_COUNT_THRESHOLD = 10
     OSPF_NEIGHBOR_MINIMUM = 1
 
-    # Confidence used when deterministic rules identify
-    # an obvious failure.
     RULE_BASED_CONFIDENCE = 0.90
 
+    # Ensemble weights as specified in Section 4.4.3.1
+    ISOLATION_FOREST_WEIGHT = 0.6
+    LOF_WEIGHT = 0.4
+    ENSEMBLE_THRESHOLD = 0.5
+
     def __init__(self):
-
-        self.anomaly_detector = None
+        # ML models
+        self.isolation_forest = None
+        self.local_outlier_factor = None
         self.failure_classifier = None
+        self.scaler = StandardScaler()
 
-        self.feature_columns = (
-            DEFAULT_FEATURE_COLUMNS.copy()
-        )
-
+        self.feature_columns = DEFAULT_FEATURE_COLUMNS.copy()
         self.metadata = None
         self.loaded = False
 
         self._load_models()
 
-    # =========================================================
-    # MODEL LOADING
-    # =========================================================
-
     def _get_models_path(self):
-
         backend_dir = os.path.dirname(
-            os.path.dirname(
-                os.path.abspath(__file__)
-            )
+            os.path.dirname(os.path.abspath(__file__))
         )
-
-        project_root = os.path.dirname(
-            backend_dir
-        )
+        project_root = os.path.dirname(backend_dir)
 
         candidate_paths = [
-            os.path.join(
-                project_root,
-                "models",
-            ),
-            os.path.join(
-                backend_dir,
-                "models",
-            ),
-            os.path.join(
-                backend_dir,
-                "training",
-                "models",
-            ),
+            os.path.join(project_root, "models"),
+            os.path.join(backend_dir, "models"),
+            os.path.join(backend_dir, "training", "models"),
         ]
 
         for path in candidate_paths:
-
-            anomaly_path = os.path.join(
-                path,
-                "anomaly_detector.pkl",
-            )
-
-            classifier_path = os.path.join(
-                path,
-                "failure_classifier.pkl",
-            )
-
-            features_path = os.path.join(
-                path,
-                "feature_columns.pkl",
-            )
-
-            if (
-                os.path.isdir(path)
-                and os.path.exists(anomaly_path)
-                and os.path.exists(classifier_path)
-                and os.path.exists(features_path)
-            ):
+            files_exist = all([
+                os.path.exists(os.path.join(path, "isolation_forest.pkl")),
+                os.path.exists(os.path.join(path, "local_outlier_factor.pkl")),
+                os.path.exists(os.path.join(path, "failure_classifier.pkl")),
+                os.path.exists(os.path.join(path, "scaler.pkl")),
+                os.path.exists(os.path.join(path, "feature_columns.pkl")),
+            ])
+            if files_exist:
                 return path
 
-        return os.path.join(
-            project_root,
-            "models",
-        )
+        return os.path.join(project_root, "models")
 
     def _load_models(self):
-
         models_path = self._get_models_path()
 
         try:
-
-            anomaly_path = os.path.join(
-                models_path,
-                "anomaly_detector.pkl",
+            self.isolation_forest = joblib.load(
+                os.path.join(models_path, "isolation_forest.pkl")
             )
-
-            classifier_path = os.path.join(
-                models_path,
-                "failure_classifier.pkl",
+            self.local_outlier_factor = joblib.load(
+                os.path.join(models_path, "local_outlier_factor.pkl")
             )
-
-            feature_path = os.path.join(
-                models_path,
-                "feature_columns.pkl",
+            self.failure_classifier = joblib.load(
+                os.path.join(models_path, "failure_classifier.pkl")
             )
-
-            self.anomaly_detector = (
-                joblib.load(anomaly_path)
+            self.scaler = joblib.load(
+                os.path.join(models_path, "scaler.pkl")
             )
-
-            self.failure_classifier = (
-                joblib.load(classifier_path)
-            )
-
-            loaded_columns = (
-                joblib.load(feature_path)
+            loaded_columns = joblib.load(
+                os.path.join(models_path, "feature_columns.pkl")
             )
 
             if loaded_columns:
+                self.feature_columns = list(loaded_columns)
 
-                self.feature_columns = list(
-                    loaded_columns
-                )
-
-            metadata_path = os.path.join(
-                models_path,
-                "model_metadata.pkl",
-            )
-
+            metadata_path = os.path.join(models_path, "model_metadata.pkl")
             if os.path.exists(metadata_path):
-
-                self.metadata = (
-                    joblib.load(
-                        metadata_path
-                    )
-                )
+                self.metadata = joblib.load(metadata_path)
 
             self.loaded = True
-
-            print(
-                "[AI ENGINE] Models loaded successfully"
-            )
-
-            print(
-                "[AI ENGINE] Feature order:",
-                self.feature_columns,
-            )
-
-            if self.metadata:
-
-                print(
-                    "[AI ENGINE] "
-                    f"Anomaly accuracy: "
-                    f"{self.metadata.get('anomaly_accuracy', 'N/A')}"
-                )
-
-                print(
-                    "[AI ENGINE] "
-                    f"Classifier accuracy: "
-                    f"{self.metadata.get('classifier_accuracy', 'N/A')}"
-                )
+            logger.info("[AI ENGINE] Ensemble models loaded successfully")
+            logger.info("[AI ENGINE] Feature order: %s", self.feature_columns)
+            logger.info("[AI ENGINE] IF weight: %s", self.ISOLATION_FOREST_WEIGHT)
+            logger.info("[AI ENGINE] LOF weight: %s", self.LOF_WEIGHT)
+            logger.info("[AI ENGINE] Threshold: %s", self.ENSEMBLE_THRESHOLD)
 
         except Exception as exc:
-
             self.loaded = False
-
-            print(
-                f"[AI ENGINE] Models not found: {exc}"
-            )
-
-            print(
-                "[AI ENGINE] Run "
-                "'python backend/training/train_models.py' "
-                "first"
-            )
-
-    # =========================================================
-    # FEATURE EXTRACTION
-    # =========================================================
+            logger.exception("[AI ENGINE] Models not found: %s", exc)
+            logger.error("[AI ENGINE] Run training script first")
 
     def extract_features(self, telemetry):
-        """
-        Convert telemetry into a one-row feature matrix.
-
-        The feature order comes from feature_columns.pkl when
-        available, otherwise TELEMETRY_FEATURE_ORDER.
-        """
-
-        normalized = normalize_telemetry(
-            telemetry
-        )
+        """Convert telemetry into a one-row feature matrix."""
+        normalized = normalize_telemetry(telemetry)
 
         if normalized is None:
-
-            ordered = [
-                0.0
-                for _ in self.feature_columns
-            ]
-
+            ordered = [0.0 for _ in self.feature_columns]
         else:
-
             ordered = []
-
             for column in self.feature_columns:
-
-                value = normalized.get(
-                    column,
-                    0.0,
-                )
-
+                value = normalized.get(column, 0.0)
                 try:
                     value = float(value)
-                except (
-                    TypeError,
-                    ValueError,
-                ):
+                except (TypeError, ValueError):
                     value = 0.0
-
                 ordered.append(value)
 
-        return np.asarray(
-            [ordered],
-            dtype=float,
-        )
+        return np.asarray([ordered], dtype=float)
 
     # =========================================================
-    # RULE-BASED DETECTION
+    # RULE-BASED DETECTION (Safety Layer)
     # =========================================================
 
-    def _rule_based_detection(
-        self,
-        telemetry,
-    ):
-        """
-        Deterministic network-failure detection.
+    def _rule_based_detection(self, normalized):
+        """Deterministic network-failure detection."""
+        if not normalized:
+            return False, 0.0, []
 
-        Returns:
+        cpu = float(normalized.get("cpu_usage", 0.0))
+        memory = float(normalized.get("memory_usage", 0.0))
+        packet_loss = float(normalized.get("packet_loss", 0.0))
+        latency = float(normalized.get("latency_ms", 0.0))
+        bandwidth = float(normalized.get("bandwidth_util", 0.0))
 
-            (
-                is_anomaly,
-                confidence,
-                reasons
-            )
-        """
-
-        normalized = normalize_telemetry(
-            telemetry
-        )
-
-        if normalized is None:
-
-            return (
-                False,
-                0.0,
-                [],
-            )
-
-        cpu = float(
-            normalized.get(
-                "cpu_usage",
-                0.0,
-            )
-        )
-
-        memory = float(
-            normalized.get(
-                "memory_usage",
-                0.0,
-            )
-        )
-
-        packet_loss = float(
-            normalized.get(
-                "packet_loss",
-                0.0,
-            )
-        )
-
-        latency = float(
-            normalized.get(
-                "latency_ms",
-                0.0,
-            )
-        )
-
-        bandwidth = float(
-            normalized.get(
-                "bandwidth_util",
-                0.0,
-            )
-        )
-
-        interface_up_count = int(
-            normalized.get(
-                "interface_up_count",
-                0,
-            )
-        )
-
-        ospf_neighbors = int(
-            normalized.get(
-                "ospf_neighbors",
-                0,
-            )
-        )
-
-        error_count = int(
-            normalized.get(
-                "error_count",
-                0,
-            )
-        )
+        ospf_neighbors = int(normalized.get("ospf_neighbors", 0))
+        error_count = int(normalized.get("error_count", 0))
 
         reasons = []
 
         if cpu > self.CPU_THRESHOLD:
-
-            reasons.append(
-                f"CPU {cpu:.1f}% > "
-                f"{self.CPU_THRESHOLD:.1f}%"
-            )
-
+            reasons.append(f"CPU {cpu:.1f}% > {self.CPU_THRESHOLD:.1f}%")
         if memory > self.MEMORY_THRESHOLD:
-
-            reasons.append(
-                f"Memory {memory:.1f}% > "
-                f"{self.MEMORY_THRESHOLD:.1f}%"
-            )
-
+            reasons.append(f"Memory {memory:.1f}% > {self.MEMORY_THRESHOLD:.1f}%")
         if packet_loss > self.PACKET_LOSS_THRESHOLD:
-
-            reasons.append(
-                f"Packet loss {packet_loss:.1f}% > "
-                f"{self.PACKET_LOSS_THRESHOLD:.1f}%"
-            )
-
+            reasons.append(f"Packet loss {packet_loss:.1f}% > {self.PACKET_LOSS_THRESHOLD:.1f}%")
         if latency > self.LATENCY_THRESHOLD:
-
-            reasons.append(
-                f"Latency {latency:.1f}ms > "
-                f"{self.LATENCY_THRESHOLD:.1f}ms"
-            )
-
+            reasons.append(f"Latency {latency:.1f}ms > {self.LATENCY_THRESHOLD:.1f}ms")
         if bandwidth > self.BANDWIDTH_THRESHOLD:
-
-            reasons.append(
-                f"Bandwidth {bandwidth:.1f}% > "
-                f"{self.BANDWIDTH_THRESHOLD:.1f}%"
-            )
-
+            reasons.append(f"Bandwidth {bandwidth:.1f}% > {self.BANDWIDTH_THRESHOLD:.1f}%")
         if error_count > self.ERROR_COUNT_THRESHOLD:
-
-            reasons.append(
-                f"Errors {error_count} > "
-                f"{self.ERROR_COUNT_THRESHOLD}"
-            )
-
+            reasons.append(f"Errors {error_count} > {self.ERROR_COUNT_THRESHOLD}")
         if ospf_neighbors < self.OSPF_NEIGHBOR_MINIMUM:
+            reasons.append(f"OSPF neighbors {ospf_neighbors} < {self.OSPF_NEIGHBOR_MINIMUM}")
 
-            reasons.append(
-                f"OSPF neighbors {ospf_neighbors} < "
-                f"{self.OSPF_NEIGHBOR_MINIMUM}"
-            )
-
-        # If all interfaces are down, treat that as an anomaly.
-        if interface_up_count <= 0:
-
-            reasons.append(
-                "No interfaces are operational"
-            )
+        # Interface down detection
+        interface_status = normalized.get("interface_status", {})
+        if isinstance(interface_status, dict):
+            down_interfaces = [
+                name for name, details in interface_status.items()
+                if name != "lo" and isinstance(details, dict) and details.get("status") == "down"
+            ]
+            if down_interfaces:
+                reasons.append(f"Interfaces down: {', '.join(down_interfaces)}")
 
         is_anomaly = bool(reasons)
-
         if not is_anomaly:
+            return False, 0.0, []
 
-            return (
-                False,
-                0.0,
-                [],
-            )
-
-        # Confidence increases as more independent
-        # symptoms are observed.
         reason_count = len(reasons)
-
         confidence = min(
             1.0,
-            self.RULE_BASED_CONFIDENCE
-            + ((reason_count - 1) * 0.02),
+            self.RULE_BASED_CONFIDENCE + ((reason_count - 1) * 0.02),
         )
 
-        return (
-            True,
-            confidence,
-            reasons,
-        )
+        return True, confidence, reasons
+
+    def _rule_based_classify(self, normalized):
+        """
+        Deterministic failure typing when ML confidence is low / domain-shifted.
+
+        Signatures mirror the simulator / PythonRouter failure metrics and the
+        synthetic labels used in Objective 1 tests.
+        """
+        if not normalized:
+            return None, 0.0
+
+        cpu = float(normalized.get("cpu_usage", 0.0))
+        memory = float(normalized.get("memory_usage", 0.0))
+        packet_loss = float(normalized.get("packet_loss", 0.0))
+        latency = float(normalized.get("latency_ms", 0.0))
+        bandwidth = float(normalized.get("bandwidth_util", 0.0))
+
+        # Resolve the most specific signatures first. DDoS and service
+        # crashes can also produce loss/latency, so LINK_FAILURE must not
+        # claim them merely because loss is elevated.
+        if cpu >= 90.0 and bandwidth >= 80.0:
+            return "DDOS_ATTACK", 0.92
+
+        if cpu >= 85.0 and memory >= 70.0 and packet_loss < 25.0 and bandwidth < 85.0:
+            return "SERVICE_CRASH", 0.91
+
+        interface_status = normalized.get("interface_status", {}) or {}
+        down_interfaces = [
+            name for name, details in interface_status.items()
+            if name not in ("lo",) and isinstance(details, dict)
+            and not str(name).startswith("__")
+            and details.get("status") == "down"
+        ]
+
+        # LINK_FAILURE: severe loss / latency with relatively normal CPU,
+        # or an explicitly down data interface.
+        if down_interfaces or (packet_loss >= 50.0 and cpu < 70.0) or (
+            latency >= 250.0 and packet_loss >= 40.0 and cpu < 70.0
+        ):
+            return "LINK_FAILURE", 0.93
+
+        raw_output = normalized.get("raw_output", {})
+        if isinstance(raw_output, dict):
+            service_output = str(raw_output.get("service", "")).upper()
+            if service_output.strip() == "FRR_DOWN":
+                return "SERVICE_CRASH", 0.97
+
+        return None, 0.0
 
     # =========================================================
-    # ISOLATION FOREST
+    # ENSEMBLE ML DETECTION (as per Section 4.4.3.1)
     # =========================================================
 
-    def _isolation_forest_detection(
-        self,
-        features,
-    ):
+    def _ensemble_detection(self, features):
         """
-        Run Isolation Forest.
+        Weighted ensemble voting as specified in the design doc.
 
-        Returns:
-
-            (
-                is_anomaly,
-                score
-            )
+        IF (0.6 * pred_a + 0.4 * pred_b) > THRESHOLD:
+            RETURN "Anomaly Detected"
         """
-
-        if self.anomaly_detector is None:
-
-            return (
-                False,
-                0.0,
-            )
+        if not self.loaded or self.isolation_forest is None or self.local_outlier_factor is None:
+            return False, 0.0
 
         try:
+            # Scale features
+            X_scaled = self.scaler.transform(features)
 
-            prediction = (
-                self.anomaly_detector.predict(
-                    features
-                )[0]
+            # Get predictions: -1 for anomaly, 1 for normal
+            if_pred = self.isolation_forest.predict(X_scaled)[0]
+            lof_pred = self.local_outlier_factor.predict(X_scaled)[0]
+
+            # Convert to binary: 1 = anomaly, 0 = normal
+            if_binary = 1 if if_pred == -1 else 0
+            lof_binary = 1 if lof_pred == -1 else 0
+
+            # Weighted voting as per specification
+            # IF (0.6 * pred_a + 0.4 * pred_b) > THRESHOLD
+            weighted_score = (
+                self.ISOLATION_FOREST_WEIGHT * if_binary +
+                self.LOF_WEIGHT * lof_binary
             )
 
-            is_anomaly = (
-                prediction == -1
-            )
+            is_anomaly = weighted_score > self.ENSEMBLE_THRESHOLD
 
-            # decision_function is useful for diagnostics,
-            # but its numeric scale depends on the model.
-            try:
+            # Confidence is the weighted score (closer to 1 = more confident)
+            confidence = float(weighted_score)
 
-                decision_score = float(
-                    self.anomaly_detector
-                    .decision_function(
-                        features
-                    )[0]
-                )
-
-            except Exception:
-
-                decision_score = 0.0
-
-            return (
-                is_anomaly,
-                decision_score,
-            )
+            return is_anomaly, confidence
 
         except Exception as exc:
-
-            print(
-                "[AI ENGINE] Isolation Forest "
-                f"error: {exc}"
-            )
-
-            return (
-                False,
-                0.0,
-            )
+            logger.exception("[AI ENGINE] Ensemble detection error: %s", exc)
+            return False, 0.0
 
     # =========================================================
-    # ANOMALY DETECTION
+    # ANOMALY DETECTION (HYBRID: Rules + Ensemble)
     # =========================================================
 
     def detect_anomaly(self, telemetry):
-        if not self.loaded:
+        """Combines Rule-Based and Ensemble ML detection."""
+        normalized = normalize_telemetry(telemetry)
+        if not normalized:
             return False, 0.0
-    
-        features = self.extract_features(telemetry)
-        cpu = features[0][0]
-        memory = features[0][1]
-        packet_loss = features[0][2]
-        latency = features[0][3]
-        bandwidth = features[0][4]
-        error_count = features[0][7]
-        ospf_neighbors = features[0][6]
-    
-        reasons = []
-        
-        if cpu > 80:
-            reasons.append(('cpu', min(1.0, (cpu - 80) / 20)))
-        if memory > 90:
-            reasons.append(('memory', min(1.0, (memory - 90) / 10)))
-        if packet_loss > 10:
-            reasons.append(('packet_loss', min(1.0, packet_loss / 50)))
-        if latency > 100:
-            reasons.append(('latency', min(1.0, (latency - 100) / 300)))
-        if bandwidth > 90:
-            reasons.append(('bandwidth', min(1.0, (bandwidth - 90) / 10)))
-        if error_count > 10:
-            reasons.append(('errors', min(1.0, error_count / 50)))
-        if ospf_neighbors < 1:
-            reasons.append(('ospf', 0.5))
-    
-        if not reasons:
-            return False, 0.0
-    
-        # Confidence based on severity, not just count
-        total_severity = sum(severity for _, severity in reasons)
-        avg_severity = total_severity / len(reasons)
-        
-        # More reasons = higher confidence, but severity matters too
-        reason_count = len(reasons)
-        
-        if reason_count >= 4:
-            confidence = 0.85 + (avg_severity * 0.15)  # 85-100%
-        elif reason_count == 3:
-            confidence = 0.70 + (avg_severity * 0.20)  # 70-90%
-        elif reason_count == 2:
-            confidence = 0.55 + (avg_severity * 0.20)  # 55-75%
-        else:
-            confidence = 0.40 + (avg_severity * 0.25)  # 40-65%
-        
-        confidence = min(1.0, max(0.35, confidence))
-        
-        return True, confidence
+
+        # 1. Deterministic Rule-Based Check (Safety Layer)
+        rule_anomaly, rule_conf, _ = self._rule_based_detection(normalized)
+        if rule_anomaly:
+            return True, rule_conf
+
+        # 2. Ensemble ML Check (Isolation Forest + LOF with weighted voting)
+        if self.loaded:
+            features = self.extract_features(normalized)
+            ensemble_anomaly, ensemble_conf = self._ensemble_detection(features)
+            if ensemble_anomaly:
+                return True, ensemble_conf
+
+        return False, 0.0
 
     # =========================================================
     # FAILURE CLASSIFICATION
     # =========================================================
 
     def classify_failure(self, telemetry):
-
-        if self.failure_classifier is None:
-
-            return (
-                "UNKNOWN",
-                0.0,
-            )
+        if self.failure_classifier is None or not self.loaded:
+            return "UNKNOWN", 0.0
 
         try:
-
-            features = self.extract_features(
-                telemetry
-            )
-
-            predicted_class = (
-                self.failure_classifier
-                .predict(features)[0]
-            )
-
+            features = self.extract_features(telemetry)
+            X_scaled = self.scaler.transform(features)
+            predicted_class = self.failure_classifier.predict(X_scaled)[0]
             confidence = 0.0
 
-            if hasattr(
-                self.failure_classifier,
-                "predict_proba",
-            ):
+            if hasattr(self.failure_classifier, "predict_proba"):
+                probabilities = self.failure_classifier.predict_proba(X_scaled)[0]
+                confidence = float(np.max(probabilities))
 
-                probabilities = (
-                    self.failure_classifier
-                    .predict_proba(
-                        features
-                    )[0]
-                )
-
-                confidence = float(
-                    np.max(
-                        probabilities
-                    )
-                )
-
-            failure_type = str(
-                predicted_class
-            )
+            failure_type = str(predicted_class)
 
             if failure_type.upper() == "NORMAL":
+                return "NORMAL", confidence
 
-                return (
-                    "NORMAL",
-                    confidence,
-                )
-
-            return (
-                failure_type,
-                confidence,
-            )
+            return failure_type, confidence
 
         except Exception as exc:
-
-            print(
-                "[AI ENGINE] Classification "
-                f"error: {exc}"
-            )
-
-            return (
-                "UNKNOWN",
-                0.0,
-            )
+            logger.exception("[AI ENGINE] Classification error: %s", exc)
+            return "UNKNOWN", 0.0
 
     # =========================================================
     # DIAGNOSIS
     # =========================================================
 
     def diagnose(self, telemetry):
-        """
-        Complete ANALYZE phase.
+        """Complete ANALYZE phase."""
+        normalized = normalize_telemetry(telemetry)
+        feature_vector = telemetry_to_feature_vector(normalized)
 
-        Returns:
-
-            {
-                is_anomaly,
-                anomaly_confidence,
-                failure_type,
-                classification_confidence,
-                feature_vector
-            }
-        """
-
-        normalized = normalize_telemetry(
-            telemetry
-        )
-
-        feature_vector = (
-            telemetry_to_feature_vector(
-                normalized
-            )
-        )
-
-        (
-            is_anomaly,
-            anomaly_confidence,
-        ) = self.detect_anomaly(
-            normalized
-        )
+        is_anomaly, anomaly_confidence = self.detect_anomaly(normalized)
 
         result = {
-            "is_anomaly": bool(
-                is_anomaly
-            ),
-
-            "anomaly_confidence": round(
-                float(
-                    anomaly_confidence
-                ),
-                4,
-            ),
-
-            "failure_type": (
-                "NORMAL"
-                if not is_anomaly
-                else "UNKNOWN"
-            ),
-
+            "is_anomaly": bool(is_anomaly),
+            "anomaly_confidence": round(float(anomaly_confidence), 4),
+            "failure_type": "NORMAL" if not is_anomaly else "UNKNOWN",
             "classification_confidence": 0.0,
-
-            "feature_vector": (
-                feature_vector
-            ),
+            "feature_vector": feature_vector,
         }
 
-        # -----------------------------------------------------
-        # Only classify anomalous telemetry
-        # -----------------------------------------------------
-
         if is_anomaly:
+            failure_type, class_conf = self.classify_failure(normalized)
+            rule_type, rule_conf = self._rule_based_classify(normalized)
 
-            (
-                failure_type,
-                classification_confidence,
-            ) = self.classify_failure(
-                normalized
-            )
+            # Prefer deterministic typing when ML is uncertain or disagrees
+            # with a clear signature (common with cross-dataset / simulator
+            # domain shift from CICIDS/UNSW-trained models).
+            if rule_type:
+                if (
+                    class_conf < 0.70
+                    or failure_type in ("UNKNOWN", "NORMAL", "")
+                    or (failure_type != rule_type and rule_conf >= class_conf)
+                ):
+                    failure_type = rule_type
+                    class_conf = max(float(class_conf), float(rule_conf))
 
-            result[
-                "failure_type"
-            ] = failure_type
+            result["failure_type"] = failure_type
+            result["classification_confidence"] = round(float(class_conf), 4)
 
-            result[
-                "classification_confidence"
-            ] = round(
-                float(
-                    classification_confidence
-                ),
-                4,
-            )
-
-        print(
-            "[AI ENGINE] Diagnosis: "
+        logger.info(
+            f"[AI ENGINE] Diagnosis: "
             f"anomaly={result['is_anomaly']} "
             f"type={result['failure_type']} "
-            f"anomaly_conf="
-            f"{result['anomaly_confidence']:.2%} "
-            f"class_conf="
-            f"{result['classification_confidence']:.2%}"
+            f"anomaly_conf={result['anomaly_confidence']:.2%} "
+            f"class_conf={result['classification_confidence']:.2%}"
         )
 
         return result

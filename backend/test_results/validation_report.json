@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-08-21T17:40:55.261046",
-  "passed": 28,
+  "timestamp": "2026-09-28T08:42:34.754574",
+  "passed": 29,
   "failed": 0,
-  "total": 28,
+  "total": 29,
   "all_passed": true,
   "results": [
     {
@@ -18,32 +18,32 @@
     {
       "test": "Objective 2: Classify SERVICE_CRASH",
       "passed": true,
-      "details": "Predicted: SERVICE_CRASH, Confidence: 78.0%"
+      "details": "Predicted: SERVICE_CRASH, Confidence: 73.7%"
     },
     {
       "test": "Objective 2: Classify LINK_FAILURE",
       "passed": true,
-      "details": "Predicted: LINK_FAILURE, Confidence: 68.0%"
+      "details": "Predicted: LINK_FAILURE, Confidence: 93.0%"
     },
     {
       "test": "Objective 2: Classify DDOS_ATTACK",
       "passed": true,
-      "details": "Predicted: DDOS_ATTACK, Confidence: 53.0%"
+      "details": "Predicted: DDOS_ATTACK, Confidence: 95.2%"
     },
     {
       "test": "Objective 3: SERVICE_CRASH has healing actions",
       "passed": true,
-      "details": "3 actions defined"
+      "details": "1 actions defined"
     },
     {
       "test": "Objective 3: LINK_FAILURE has healing actions",
       "passed": true,
-      "details": "2 actions defined"
+      "details": "1 actions defined"
     },
     {
       "test": "Objective 3: DDOS_ATTACK has healing actions",
       "passed": true,
-      "details": "2 actions defined"
+      "details": "1 actions defined"
     },
     {
       "test": "Objective 3: Can select action for SERVICE_CRASH",
@@ -113,27 +113,32 @@
     {
       "test": "Objective 5: RL agent initializes",
       "passed": true,
-      "details": "Epsilon: 0.18832456138287512, Episodes: 12"
+      "details": "Epsilon: 0.2, Episodes: 1757"
     },
     {
       "test": "Objective 5: Select action for SERVICE_CRASH",
       "passed": true,
-      "details": "Action 0/3"
+      "details": "Action 0/1"
     },
     {
       "test": "Objective 5: Select action for LINK_FAILURE",
       "passed": true,
-      "details": "Action 0/2"
+      "details": "Action 0/1"
     },
     {
       "test": "Objective 5: Select action for DDOS_ATTACK",
       "passed": true,
-      "details": "Action 0/2"
+      "details": "Action 0/1"
     },
     {
-      "test": "Objective 5: Q-value updates with positive reward",
+      "test": "Objective 5: Q-value updates according to learning rule",
       "passed": true,
-      "details": "Q-value: 0.639 \u2192 0.662"
+      "details": "Q-value: 1.000 -> 1.000, expected: 1.000"
+    },
+    {
+      "test": "Objective 5: Q-value decreases with negative reward",
+      "passed": true,
+      "details": "Q-value: 0.500 -> 0.350"
     },
     {
       "test": "Objective 5: Reward recorded in database",
@@ -143,7 +148,7 @@
     {
       "test": "Objective 5: Agent statistics available",
       "passed": true,
-      "details": "Episodes: 14, Performance: 0.929"
+      "details": "Episodes: 1760, Performance: 0.95"
     }
   ]
 }

@@ -1,0 +1,149 @@
+{
+  "timestamp": "2026-09-16T11:17:41.092275",
+  "passed": 28,
+  "failed": 0,
+  "total": 28,
+  "all_passed": true,
+  "results": [
+    {
+      "test": "Objective 1: Models loaded",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "test": "Objective 1: Detection accuracy",
+      "passed": true,
+      "details": "100.0% (8/8), target: 90%"
+    },
+    {
+      "test": "Objective 2: Classify SERVICE_CRASH",
+      "passed": true,
+      "details": "Predicted: SERVICE_CRASH, Confidence: 73.7%"
+    },
+    {
+      "test": "Objective 2: Classify LINK_FAILURE",
+      "passed": true,
+      "details": "Predicted: LINK_FAILURE, Confidence: 93.0%"
+    },
+    {
+      "test": "Objective 2: Classify DDOS_ATTACK",
+      "passed": true,
+      "details": "Predicted: DDOS_ATTACK, Confidence: 95.2%"
+    },
+    {
+      "test": "Objective 3: SERVICE_CRASH has healing actions",
+      "passed": true,
+      "details": "1 actions defined"
+    },
+    {
+      "test": "Objective 3: LINK_FAILURE has healing actions",
+      "passed": true,
+      "details": "1 actions defined"
+    },
+    {
+      "test": "Objective 3: DDOS_ATTACK has healing actions",
+      "passed": true,
+      "details": "1 actions defined"
+    },
+    {
+      "test": "Objective 3: Can select action for SERVICE_CRASH",
+      "passed": true,
+      "details": "Selected: RESTART_SERVICE"
+    },
+    {
+      "test": "Objective 3: Can select action for LINK_FAILURE",
+      "passed": true,
+      "details": "Selected: REROUTE_TRAFFIC"
+    },
+    {
+      "test": "Objective 3: Can select action for DDOS_ATTACK",
+      "passed": true,
+      "details": "Selected: BLOCK_SOURCE_IP"
+    },
+    {
+      "test": "Objective 3: Sandbox accepts safe commands",
+      "passed": true,
+      "details": "'restart service nginx' validated"
+    },
+    {
+      "test": "Objective 3: Sandbox blocks dangerous commands",
+      "passed": true,
+      "details": "'rm -rf /' blocked"
+    },
+    {
+      "test": "Objective 4: XAI explanation for SERVICE_CRASH",
+      "passed": true,
+      "details": "Summary: The ML model detected a SERVICE CRASH with 94% confidence. This diagnosis is bas..."
+    },
+    {
+      "test": "Objective 4: XAI explanation for LINK_FAILURE",
+      "passed": true,
+      "details": "Summary: The ML model detected a LINK FAILURE with 94% confidence. This is characterized ..."
+    },
+    {
+      "test": "Objective 4: XAI explanation for DDOS_ATTACK",
+      "passed": true,
+      "details": "Summary: The ML model detected a DDoS ATTACK with 94% confidence. The signature is near-m..."
+    },
+    {
+      "test": "Objective 4: Confidence level 0.95",
+      "passed": true,
+      "details": "Got: Very High, Expected: Very High"
+    },
+    {
+      "test": "Objective 4: Confidence level 0.85",
+      "passed": true,
+      "details": "Got: High, Expected: High"
+    },
+    {
+      "test": "Objective 4: Confidence level 0.7",
+      "passed": true,
+      "details": "Got: Moderate, Expected: Moderate"
+    },
+    {
+      "test": "Objective 4: Confidence level 0.5",
+      "passed": true,
+      "details": "Got: Low, Expected: Low"
+    },
+    {
+      "test": "Objective 4: Confidence level 0.3",
+      "passed": true,
+      "details": "Got: Very Low, Expected: Very Low"
+    },
+    {
+      "test": "Objective 5: RL agent initializes",
+      "passed": true,
+      "details": "Epsilon: 0.2, Episodes: 650"
+    },
+    {
+      "test": "Objective 5: Select action for SERVICE_CRASH",
+      "passed": true,
+      "details": "Action 0/1"
+    },
+    {
+      "test": "Objective 5: Select action for LINK_FAILURE",
+      "passed": true,
+      "details": "Action 0/1"
+    },
+    {
+      "test": "Objective 5: Select action for DDOS_ATTACK",
+      "passed": true,
+      "details": "Action 0/1"
+    },
+    {
+      "test": "Objective 5: Q-value updates with positive reward",
+      "passed": true,
+      "details": "Q-value: 0.834 -> 0.851"
+    },
+    {
+      "test": "Objective 5: Reward recorded in database",
+      "passed": true,
+      "details": "Reward saved successfully"
+    },
+    {
+      "test": "Objective 5: Agent statistics available",
+      "passed": true,
+      "details": "Episodes: 652, Performance: 1.0"
+    }
+  ]
+}

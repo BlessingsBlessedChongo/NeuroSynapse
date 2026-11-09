@@ -1,10 +1,13 @@
 import time
 import threading
+import logging
 
 from django.db import close_old_connections
 
 from monitoring.models import Device, Telemetry
 from monitoring.connector import get_connector, normalize_telemetry, persist_interface_status
+
+logger = logging.getLogger('neurosynapse.monitoring.scheduler')
 
 
 class TelemetryCollector:
@@ -21,14 +24,14 @@ class TelemetryCollector:
             self.running = True
             self._thread = threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
-            print("[SCHEDULER] Collector started.")
+            logger.info("[SCHEDULER] Collector started.")
 
     def stop(self):
         with self._lock:
             self.running = False
         if self._thread:
             self._thread.join(timeout=10)
-        print("[SCHEDULER] Collector stopped.")
+        logger.info("[SCHEDULER] Collector stopped.")
 
     def collect_once(self):
         """Collect telemetry for all active devices (non-blocking helper)."""
@@ -49,7 +52,7 @@ class TelemetryCollector:
             try:
                 raw = connector.collect_telemetry()
                 if not raw:
-                    print(f"[SCHEDULER] Failed to collect from {device.name}")
+                    logger.warning("[SCHEDULER] Failed to collect from %s", device.name)
                     continue
 
                 normalized = normalize_telemetry(raw)
@@ -66,12 +69,12 @@ class TelemetryCollector:
                     raw_output=normalized.get('raw_output', ''),
                 )
                 saved.append(telemetry)
-                print(
+                logger.info(
                     f"[SCHEDULER] Saved telemetry from {device.name} "
                     f"(cpu={normalized['cpu_usage']}, loss={normalized['packet_loss']})"
                 )
             except Exception as exc:
-                print(f"[SCHEDULER] Error collecting from {device.name}: {exc}")
+                logger.exception("[SCHEDULER] Error collecting from %s", device.name)
             finally:
                 connector.disconnect()
         return saved
@@ -82,7 +85,7 @@ class TelemetryCollector:
                 close_old_connections()
                 self.collect_once()
             except Exception as e:
-                print(f"[SCHEDULER] Error: {e}")
+                logger.exception("[SCHEDULER] Error in collection loop")
             time.sleep(self.interval)
 
 

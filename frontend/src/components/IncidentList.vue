@@ -107,68 +107,167 @@
           </span>
         </template>
 
+        <!--
+          Actions cell: always right-aligned (justify-end) so the Download
+          button — present on every row — lands in the exact same x
+          position regardless of how many contextual buttons (Approve/
+          Reject/Rollback) sit to its left. Previously this used
+          justify-center, which shifts Download's position depending on
+          its sibling count: centered alone on most rows, but pushed left
+          of center when paired with Approve+Reject or Rollback. That
+          inconsistency, not the icon choice, was the "conflicting" look.
+
+          Download is also visually demoted (variant="text", muted slate)
+          relative to Approve/Reject/Rollback (variant="flat"/"tonal",
+          saturated color) since it's a zero-risk, every-row utility
+          action and shouldn't compete for attention with the actions
+          that actually change system state.
+        -->
         <template #item.actions="{ item }">
-          <div v-if="item.status === 'MANUAL_REVIEW'" class="d-flex flex-wrap ga-1 justify-center">
-            <v-tooltip v-if="!store.canApprove" text="Requires Administrator Privileges" location="top">
+          <div class="d-flex align-center justify-end ga-1 actions-cell">
+            <template v-if="item.status === 'MANUAL_REVIEW'">
+              <v-tooltip v-if="!store.canApprove" text="Requires Administrator Privileges" location="top">
+                <template #activator="{ props }">
+                  <span v-bind="props">
+                    <v-btn size="x-small" color="success" variant="flat" disabled icon="mdi-check" />
+                  </span>
+                </template>
+              </v-tooltip>
+              <template v-else>
+                <v-tooltip text="Approve healing action" location="top">
+                  <template #activator="{ props }">
+                    <v-btn
+                      v-bind="props"
+                      size="x-small"
+                      color="success"
+                      variant="flat"
+                      icon="mdi-check"
+                      :loading="approvingId === item.id"
+                      :disabled="rejectingId === item.id"
+                      @click="handleApprove(item.id)"
+                    />
+                  </template>
+                </v-tooltip>
+                <v-tooltip text="Reject and return to monitoring" location="top">
+                  <template #activator="{ props }">
+                    <v-btn
+                      v-bind="props"
+                      size="x-small"
+                      color="error"
+                      variant="flat"
+                      icon="mdi-close"
+                      :loading="rejectingId === item.id"
+                      :disabled="approvingId === item.id"
+                      @click="handleReject(item.id)"
+                    />
+                  </template>
+                </v-tooltip>
+              </template>
+            </template>
+
+            <template v-else-if="item.status === 'HEALED' && store.canApprove">
+              <v-tooltip text="Roll back this healing action" location="top">
+                <template #activator="{ props }">
+                  <v-btn
+                    v-bind="props"
+                    size="x-small"
+                    color="amber-accent-4"
+                    variant="tonal"
+                    icon="mdi-backup-restore"
+                    :loading="rollingBackId === item.id"
+                    @click="confirmRollback(item)"
+                  />
+                </template>
+              </v-tooltip>
+            </template>
+
+            <v-tooltip text="Download healing log" location="top">
               <template #activator="{ props }">
-                <span v-bind="props">
-                  <v-btn size="x-small" color="success" variant="flat" disabled icon="mdi-check" />
-                </span>
+                <v-btn
+                  v-bind="props"
+                  size="x-small"
+                  variant="text"
+                  class="download-btn"
+                  icon="mdi-download"
+                  :loading="downloadingLogId === item.id"
+                  @click.stop="downloadLog(item.id)"
+                />
               </template>
             </v-tooltip>
-            <template v-else>
-              <v-btn
-                size="x-small"
-                color="success"
-                variant="flat"
-                icon="mdi-check"
-                :loading="approvingId === item.id"
-                :disabled="rejectingId === item.id"
-                @click="handleApprove(item.id)"
-              />
-              <v-btn
-                size="x-small"
-                color="error"
-                variant="flat"
-                icon="mdi-close"
-                :loading="rejectingId === item.id"
-                :disabled="approvingId === item.id"
-                @click="handleReject(item.id)"
-              />
-            </template>
           </div>
-
-          <div v-else-if="item.status === 'HEALED' && store.canApprove" class="d-flex justify-center">
-            <v-btn
-              size="x-small"
-              color="amber-accent-4"
-              variant="tonal"
-              icon="mdi-backup-restore"
-              :loading="rollingBackId === item.id"
-              @click="handleRollback(item.id)"
-            />
-          </div>
-
-          <v-icon
-            v-else
-            icon="mdi-minus"
-            size="18"
-            color="slate-500"
-          />
         </template>
       </v-data-table>
+
+      <!-- Rollback confirmation dialog -->
+      <v-dialog v-model="rollbackDialog.show" max-width="440" persistent>
+        <v-card class="rollback-dialog rounded-xl pa-2">
+          <v-card-title class="d-flex align-center ga-3 pt-4 px-4">
+            <v-avatar color="amber-accent-4" variant="tonal" size="36">
+              <v-icon icon="mdi-backup-restore" size="20" />
+            </v-avatar>
+            <span class="text-h6 font-weight-bold text-slate-100">Roll back this healing action?</span>
+          </v-card-title>
+          <v-card-text class="px-4 pt-2 text-body-2 text-slate-300">
+            <p class="mb-2">
+              Incident <span class="font-mono text-slate-100">#{{ rollbackDialog.incident?.id }}</span>
+              ({{ rollbackDialog.incident?.failure_type_display || rollbackDialog.incident?.failure_type }})
+              on <span class="font-weight-bold text-slate-100">{{ rollbackDialog.incident?.device_name }}</span>
+              will return to <span class="font-mono">MONITORING</span> for re-evaluation.
+            </p>
+            <p class="mb-0 text-amber-300">
+              This cannot be undone from here — the device will be re-assessed on the next
+              monitoring cycle as if the healing action hadn't happened.
+            </p>
+          </v-card-text>
+          <v-card-actions class="px-4 pb-4 pt-3">
+            <v-spacer />
+            <v-btn variant="text" color="slate-300" :disabled="rollingBackId !== null" @click="cancelRollback">
+              Cancel
+            </v-btn>
+            <v-btn
+              variant="flat"
+              color="amber-accent-4"
+              prepend-icon="mdi-backup-restore"
+              :loading="rollingBackId === rollbackDialog.incident?.id"
+              @click="proceedRollback"
+            >
+              Roll Back
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
+      <!-- Error snackbar for download failures -->
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="4000" location="bottom right">
+        {{ snackbar.message }}
+        <template #actions>
+          <v-btn variant="text" @click="snackbar.show = false">Close</v-btn>
+        </template>
+      </v-snackbar>
     </v-card-text>
   </v-card>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, reactive } from 'vue'
 import { useNetworkStore } from '@/stores/network'
 
 const store = useNetworkStore()
 const approvingId = ref(null)
 const rejectingId = ref(null)
 const rollingBackId = ref(null)
+const downloadingLogId = ref(null)
+
+const rollbackDialog = reactive({
+  show: false,
+  incident: null,
+})
+
+const snackbar = reactive({
+  show: false,
+  message: '',
+  color: 'error',
+})
 
 const headers = [
   { title: 'Type', key: 'failure_type', sortable: false },
@@ -176,7 +275,7 @@ const headers = [
   { title: 'Status', key: 'status', sortable: false },
   { title: 'Confidence', key: 'confidence_score', sortable: false },
   { title: 'Detected', key: 'detected_at', sortable: false },
-  { title: 'Actions', key: 'actions', sortable: false, align: 'center' },
+  { title: 'Actions', key: 'actions', sortable: false, align: 'end', width: 132 },
 ]
 
 function hasContext(item) {
@@ -248,12 +347,19 @@ function formatDetectedTime(isoString) {
   }
 }
 
+function showError(message) {
+  snackbar.message = message
+  snackbar.color = 'error'
+  snackbar.show = true
+}
+
 async function handleApprove(id) {
   approvingId.value = id
   try {
     await store.approveIncident(id)
   } catch (error) {
     console.error('Failed to approve healing:', error)
+    showError(error.response?.data?.detail || 'Failed to approve healing.')
   } finally {
     approvingId.value = null
   }
@@ -265,19 +371,104 @@ async function handleReject(id) {
     await store.rejectIncident(id)
   } catch (error) {
     console.error('Failed to reject healing:', error)
+    showError(error.response?.data?.detail || 'Failed to reject healing.')
   } finally {
     rejectingId.value = null
   }
 }
 
-async function handleRollback(id) {
+// Rollback is destructive and irreversible from the UI, so it now goes
+// through a confirmation dialog instead of firing immediately on click.
+function confirmRollback(item) {
+  rollbackDialog.incident = item
+  rollbackDialog.show = true
+}
+
+function cancelRollback() {
+  rollbackDialog.show = false
+  rollbackDialog.incident = null
+}
+
+async function proceedRollback() {
+  const id = rollbackDialog.incident?.id
+  if (!id) return
   rollingBackId.value = id
   try {
     await store.rollbackIncident(id)
+    rollbackDialog.show = false
+    rollbackDialog.incident = null
   } catch (error) {
     console.error('Failed to roll back incident:', error)
+    showError(error.response?.data?.detail || 'Failed to roll back incident.')
+    // Leave the dialog open on failure so the user can see the error
+    // and retry, rather than silently closing on a failed rollback.
   } finally {
     rollingBackId.value = null
+  }
+}
+
+/**
+ * Extract a human-readable error message from an axios error whose response
+ * may be a Blob (because we requested responseType: 'blob').
+ */
+async function extractErrorDetail(error) {
+  const data = error?.response?.data
+
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text()
+      if (!text) return null
+      try {
+        const parsed = JSON.parse(text)
+        return parsed?.detail || parsed?.message || text
+      } catch {
+        return text
+      }
+    } catch {
+      return null
+    }
+  }
+
+  if (typeof data === 'string') return data
+  if (data && typeof data === 'object') return data.detail || data.message || null
+  return null
+}
+
+async function downloadLog(id) {
+  downloadingLogId.value = id
+  try {
+    const response = await store.downloadIncidentLog(id)
+    const blob = response.data instanceof Blob
+      ? response.data
+      : new Blob([response.data], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const disposition = response.headers['content-disposition'] || ''
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i)
+    link.href = url
+    link.download = filenameMatch?.[1] || `incident_${id}_healing.log`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    // A 401 from the download endpoint is treated by the api interceptor as
+    // a session expiry and will already log the user out. For everything
+    // else (404, 500, network error, malformed response) we show a message
+    // instead of dropping the user's session.
+    if (error.response?.status !== 401) {
+      const detail = await extractErrorDetail(error)
+      console.error('Failed to download healing log:', error)
+      showError(detail || 'Failed to download healing log.')
+    } else {
+      // Backend rejected the token specifically for this endpoint —
+      // surface it so it's not a silent logout.
+      const detail = await extractErrorDetail(error)
+      console.error('Download rejected (401):', detail || error)
+      showError(detail || 'Your session is no longer valid for this download.')
+    }
+  } finally {
+    downloadingLogId.value = null
   }
 }
 </script>
@@ -305,6 +496,29 @@ async function handleRollback(id) {
 
 .incident-table :deep(.v-data-table__tr:hover) {
   background: rgba(30, 41, 59, 0.5) !important;
+}
+
+/* Fixed-width, right-aligned actions cell so Download's x-position never
+   shifts based on how many contextual buttons are next to it. */
+.actions-cell {
+  min-width: 96px;
+}
+
+/* Demoted, low-emphasis style for the always-present Download button —
+   deliberately quieter than Approve/Reject/Rollback so it doesn't compete
+   for attention with the actions that actually change system state. */
+.download-btn {
+  opacity: 0.7;
+  color: #94a3b8 !important;
+}
+.download-btn:hover {
+  opacity: 1;
+  color: #67e8f9 !important;
+}
+
+.rollback-dialog {
+  background: #0f172a !important;
+  border: 1px solid rgba(148, 163, 184, 0.15);
 }
 
 .state-panel {

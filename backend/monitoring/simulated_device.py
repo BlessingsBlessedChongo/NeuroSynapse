@@ -18,7 +18,7 @@ to the running server process.
 import random
 from threading import Lock
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ==============================================================
@@ -44,10 +44,8 @@ TELEMETRY_FEATURE_ORDER: List[str] = [
 FAILURE_ALIASES: Dict[str, str] = {
     "service_crash": "SERVICE_CRASH",
     "service-crash": "SERVICE_CRASH",
-
     "link_failure": "LINK_FAILURE",
     "link-failure": "LINK_FAILURE",
-
     "ddos": "DDOS_ATTACK",
     "ddos_attack": "DDOS_ATTACK",
     "ddos-attack": "DDOS_ATTACK",
@@ -61,15 +59,22 @@ SUPPORTED_FAILURES = {
 }
 
 
-class SimulatedDevice:
-    """
-    Thread-safe simulated network device with database-backed state.
+# Which failure type each healing action_type is meant to resolve.
+# Used so heal() only "succeeds" when the action actually targets the
+# failure that's currently active.
+ACTION_TO_FAILURE: Dict[str, Optional[str]] = {
+    "RESTART_SERVICE": "SERVICE_CRASH",
+    "REBOOT_DEVICE": "SERVICE_CRASH",
+    "REROUTE_TRAFFIC": "LINK_FAILURE",
+    "BLOCK_SOURCE_IP": "DDOS_ATTACK",
+    "UNBLOCK_SOURCE_IP": "DDOS_ATTACK",
+    "CLEAR_TRAFFIC_SHAPING": "DDOS_ATTACK",
+    "HEAL": None,  # generic action: allowed against any active failure
+}
 
-    All processes (server, management commands, API calls) share
-    the same SimulatorState row in the database, so failure injection
-    from one process is visible to the scheduler/orchestrator in
-    another process.
-    """
+
+class SimulatedDevice:
+    """Thread-safe simulated network device with database-backed state."""
 
     _lock = Lock()
 
@@ -83,7 +88,6 @@ class SimulatedDevice:
     def _get_state(self):
         """Return the singleton SimulatorState row."""
         from monitoring.models import SimulatorState
-
         state, _ = SimulatorState.objects.get_or_create(id=1)
         return state
 
@@ -129,65 +133,45 @@ class SimulatedDevice:
     # ==========================================================
 
     def get_telemetry(self) -> Dict[str, Any]:
-        """
-        Generate telemetry according to the current database state.
-
-        A CRITICAL device remains CRITICAL for every telemetry
-        collection until heal() succeeds.
-        """
+        """Generate telemetry according to the current database state."""
         state = self._get_state()
         health = state.health
         failure_type = state.failure_type
         context = dict(state.context or {})
 
         with self._lock:
-            # --------------------------------------------------
-            # HEALTHY
-            # --------------------------------------------------
             if health == "HEALTHY":
                 cpu = random.uniform(20.0, 45.0)
                 memory = random.uniform(30.0, 60.0)
                 packet_loss = round(random.uniform(0.0, 0.5), 2)
                 latency = random.uniform(2.0, 12.0)
                 bandwidth = random.uniform(20.0, 60.0)
-
                 interfaces = {k: {"status": "up"} for k in ["ether1", "ether2", "ether3"]}
-
                 if random.random() < 0.1:
                     chosen = random.choice(list(interfaces.keys()))
                     interfaces[chosen]["status"] = "down"
-
                 ospf_neighbors = random.randint(1, 3)
                 error_count = random.randint(0, 3)
 
-            # --------------------------------------------------
-            # SERVICE CRASH
-            # --------------------------------------------------
             elif failure_type == "SERVICE_CRASH":
                 cpu = random.uniform(92.0, 98.0)
                 memory = random.uniform(85.0, 90.0)
                 packet_loss = round(random.uniform(3.0, 5.0), 2)
                 latency = random.uniform(40.0, 60.0)
                 bandwidth = random.uniform(55.0, 65.0)
-
                 interfaces = {k: {"status": "up"} for k in ["ether1", "ether2", "ether3"]}
                 ospf_neighbors = 2
                 error_count = random.randint(3, 5)
 
-            # --------------------------------------------------
-            # LINK FAILURE
-            # --------------------------------------------------
             elif failure_type == "LINK_FAILURE":
                 cpu = random.uniform(25.0, 35.0)
                 memory = random.uniform(40.0, 48.0)
                 packet_loss = round(random.uniform(75.0, 85.0), 2)
                 latency = random.uniform(350.0, 450.0)
                 bandwidth = random.uniform(10.0, 20.0)
-
                 failed_interface = context.get("interface_name", "ether1")
                 if failed_interface not in ("ether1", "ether2", "ether3"):
                     failed_interface = "ether1"
-
                 interfaces = {
                     k: {"status": "down" if k == failed_interface else "up"}
                     for k in ["ether1", "ether2", "ether3"]
@@ -195,23 +179,16 @@ class SimulatedDevice:
                 ospf_neighbors = 0
                 error_count = random.randint(50, 60)
 
-            # --------------------------------------------------
-            # DDOS ATTACK
-            # --------------------------------------------------
             elif failure_type == "DDOS_ATTACK":
                 cpu = random.uniform(97.0, 100.0)
                 memory = random.uniform(65.0, 75.0)
                 packet_loss = round(random.uniform(30.0, 40.0), 2)
                 latency = random.uniform(180.0, 220.0)
                 bandwidth = random.uniform(90.0, 98.0)
-
                 interfaces = {k: {"status": "up"} for k in ["ether1", "ether2", "ether3"]}
                 ospf_neighbors = 2
                 error_count = random.randint(15, 20)
 
-            # --------------------------------------------------
-            # UNKNOWN
-            # --------------------------------------------------
             else:
                 cpu = 0.0
                 memory = 0.0
@@ -222,29 +199,19 @@ class SimulatedDevice:
                 ospf_neighbors = 0
                 error_count = 0
 
-            interface_up_count = sum(
-                1 for d in interfaces.values() if d.get("status") == "up"
-            )
-
+            interface_up_count = sum(1 for d in interfaces.values() if d.get("status") == "up")
             interface_status = {k: v.copy() for k, v in interfaces.items()}
-
             interface_status["__metrics__"] = {
                 "interface_up_count": int(interface_up_count),
                 "ospf_neighbors": int(ospf_neighbors),
                 "error_count": int(error_count),
             }
-
             interface_status["__context__"] = dict(context)
 
             raw_output = (
-                f"cpu:{cpu:.1f}% "
-                f"mem:{memory:.1f}% "
-                f"loss:{packet_loss:.2f}% "
-                f"lat:{latency:.1f}ms "
-                f"bw:{bandwidth:.1f}% "
-                f"up:{interface_up_count} "
-                f"ospf:{ospf_neighbors} "
-                f"err:{error_count}"
+                f"cpu:{cpu:.1f}% mem:{memory:.1f}% loss:{packet_loss:.2f}% "
+                f"lat:{latency:.1f}ms bw:{bandwidth:.1f}% up:{interface_up_count} "
+                f"ospf:{ospf_neighbors} err:{error_count}"
             )
 
             return {
@@ -331,12 +298,24 @@ class SimulatedDevice:
     # ==========================================================
 
     def heal(self, action_type: str) -> Tuple[bool, str]:
-        """Attempt to heal the active failure."""
+        """
+        Attempt to heal the active failure.
+
+        Checks that the action actually targets the failure that's
+        currently active before rolling a success/fail chance.
+        """
         with self._lock:
             state = self._get_state()
 
             if state.health == "HEALTHY":
                 return True, "[INFO] Device is already healthy."
+
+            expected_failure = ACTION_TO_FAILURE.get(action_type)
+            if expected_failure and expected_failure != state.failure_type:
+                return False, (
+                    f"[WARN] Action '{action_type}' does not address the active "
+                    f"failure '{state.failure_type}'. No change made."
+                )
 
             success = random.random() <= 0.85
 

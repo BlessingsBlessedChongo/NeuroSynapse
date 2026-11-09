@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import api, { getStoredToken, registerUnauthorizedHandler, setStoredToken } from '@/services/api'
 
-// Figure 3.2 states
+// From State Diagram
 const OPEN_STATUSES = [
   'ANOMALY_DETECTED',
   'MANUAL_REVIEW',
@@ -20,14 +20,18 @@ export const useNetworkStore = defineStore('network', {
 
     // ---- Devices ----
     devices: [],
+    devicesError: null,
     deviceTelemetry: {},
 
     // ---- Dashboard summary ----
     summary: null,
+    summaryError: null,
 
     // ---- Incidents & healing actions ----
     incidents: [],
+    incidentsError: null,
     healingActions: [],
+    healingActionsError: null,
 
     // ---- RL Stats ----
     rlStats: null,
@@ -42,11 +46,21 @@ export const useNetworkStore = defineStore('network', {
     telemetryHistory: [],
     telemetryError: null,
 
-    // ---- XAI explanation ----
+    // ---- XAI explanation (dashboard "latest incident" widget) ----
+    // Kept separate from `viewedXai*` below so that auto-refresh never
+    // clobbers an explanation the user has deliberately opened for a
+    // different, older incident (e.g. from the manual-review queue).
     xaiExplanation: null,
     xaiLoading: false,
     xaiError: null,
     activeXaiIncidentId: null,
+
+    // ---- XAI explanation (whatever incident the user is *currently
+    // viewing* in a modal/detail pane) ----
+    viewedXaiExplanation: null,
+    viewedXaiLoading: false,
+    viewedXaiError: null,
+    viewedXaiIncidentId: null,
 
     // ---- Authentication ----
     token: getStoredToken(),
@@ -60,6 +74,7 @@ export const useNetworkStore = defineStore('network', {
 
     // ---- Refresh interval ----
     refreshInterval: null,
+    refreshInFlight: false,
   }),
 
   getters: {
@@ -163,7 +178,7 @@ export const useNetworkStore = defineStore('network', {
       this.role = null
     },
 
-    // ---- Summary (NOW populates incidents + healings) ----
+    // ---- Summary ----
     async fetchSummary() {
       try {
         this.loading = true
@@ -171,7 +186,6 @@ export const useNetworkStore = defineStore('network', {
         this.summary = response.data
         this.lastUpdated = new Date()
 
-        // Populate incidents from summary as fallback
         if (response.data.recent_incidents) {
           this.incidents = response.data.recent_incidents
         }
@@ -179,10 +193,12 @@ export const useNetworkStore = defineStore('network', {
           this.healingActions = response.data.recent_healing_actions
         }
 
+        this.summaryError = null
         this.error = null
       } catch (err) {
-        this.error = 'Failed to fetch dashboard summary: ' + err.message
-        console.error(this.error, err)
+        this.summaryError = 'Failed to fetch dashboard summary: ' + err.message
+        this.error = this.summaryError
+        console.error(this.summaryError, err)
       } finally {
         this.loading = false
       }
@@ -194,9 +210,9 @@ export const useNetworkStore = defineStore('network', {
         const response = await api.getDevices()
         const data = response.data
         this.devices = Array.isArray(data) ? data : data.results || []
-        this.error = null
+        this.devicesError = null
       } catch (err) {
-        this.error = 'Failed to fetch devices: ' + err.message
+        this.devicesError = 'Failed to fetch devices: ' + err.message
       }
     },
 
@@ -212,6 +228,8 @@ export const useNetworkStore = defineStore('network', {
 
         telemetryData.forEach((deviceGroup) => {
           const records = deviceGroup.records || []
+          const deviceName = deviceGroup.device
+
           records.forEach((record) => {
             const key = record.timestamp
             if (!timestampMap.has(key)) timestampMap.set(key, [])
@@ -221,12 +239,19 @@ export const useNetworkStore = defineStore('network', {
               packet_loss: parseFloat(record.packet_loss) || 0,
             })
           })
+
           if (records[0]) {
-            deviceLatest[deviceGroup.device] = {
-              cpu: parseFloat(records[0].cpu) || 0,
-              memory: parseFloat(records[0].memory) || 0,
-              packet_loss: parseFloat(records[0].packet_loss) || 0,
-              timestamp: records[0].timestamp,
+            const latest = records[0]
+            deviceLatest[deviceName] = {
+              cpu: parseFloat(latest.cpu) || 0,
+              memory: parseFloat(latest.memory) || 0,
+              packet_loss: parseFloat(latest.packet_loss) || 0,
+              latency_ms: parseFloat(latest.latency_ms) || 0,
+              bandwidth_util: parseFloat(latest.bandwidth_util) || 0,
+              ospf_neighbors: parseInt(latest.ospf_neighbors) || 0,
+              error_count: parseInt(latest.error_count) || 0,
+              interface_status: latest.interface_status || {},
+              timestamp: latest.timestamp,
             }
           }
         })
@@ -247,6 +272,7 @@ export const useNetworkStore = defineStore('network', {
         this.deviceTelemetry = deviceLatest
       } catch (err) {
         this.telemetryError = 'Failed to load telemetry.'
+        console.error('Failed to fetch telemetry:', err)
       }
     },
 
@@ -256,14 +282,14 @@ export const useNetworkStore = defineStore('network', {
         const response = await api.getIncidents(params)
         const data = response.data || []
         this.incidents = data.length > 0 ? data : this._fallbackIncidentsFromSummary()
-        this.error = null
+        this.incidentsError = null
       } catch (err) {
         const fallback = this._fallbackIncidentsFromSummary()
         if (fallback.length > 0) {
           this.incidents = fallback
-          this.error = null
+          this.incidentsError = null
         } else {
-          this.error = 'Failed to fetch incidents: ' + err.message
+          this.incidentsError = 'Failed to fetch incidents: ' + err.message
         }
       }
     },
@@ -272,6 +298,14 @@ export const useNetworkStore = defineStore('network', {
       return this.summary?.recent_incidents || []
     },
 
+    /**
+     * Fetch the XAI explanation for the dashboard's "latest incident"
+     * widget. This is called automatically by refreshAll() every poll
+     * cycle, so it must never be the same state a user-opened modal
+     * reads from -- otherwise the modal's content would silently swap
+     * out from under them every 10 seconds. Use fetchViewedIncidentDetail
+     * for anything the user explicitly opened.
+     */
     async fetchIncidentDetail(incidentId, force = false) {
       if (!incidentId) return null
       if (!force && incidentId === this.activeXaiIncidentId && this.xaiExplanation) {
@@ -294,6 +328,39 @@ export const useNetworkStore = defineStore('network', {
       }
     },
 
+    /**
+     * Fetch the XAI explanation for whatever incident the user has
+     * explicitly opened (e.g. clicked a row in the incident list).
+     * Never touched by the auto-refresh loop.
+     */
+    async fetchViewedIncidentDetail(incidentId, force = false) {
+      if (!incidentId) return null
+      if (!force && incidentId === this.viewedXaiIncidentId && this.viewedXaiExplanation) {
+        return this.viewedXaiExplanation
+      }
+
+      this.viewedXaiLoading = true
+      this.viewedXaiError = null
+      try {
+        const response = await api.getIncidentDetail(incidentId)
+        this.viewedXaiExplanation = response.data?.xai_explanation || null
+        this.viewedXaiIncidentId = incidentId
+        return response.data
+      } catch (err) {
+        this.viewedXaiExplanation = null
+        this.viewedXaiError = 'Unable to load diagnosis explanation.'
+        return null
+      } finally {
+        this.viewedXaiLoading = false
+      }
+    },
+
+    clearViewedIncident() {
+      this.viewedXaiExplanation = null
+      this.viewedXaiIncidentId = null
+      this.viewedXaiError = null
+    },
+
     async approveIncident(incidentId) {
       await api.approveIncident(incidentId)
       await this.refreshAll()
@@ -309,16 +376,24 @@ export const useNetworkStore = defineStore('network', {
       await this.refreshAll()
     },
 
+    async downloadIncidentLog(incidentId) {
+      return api.downloadIncidentLog(incidentId)
+    },
+
     // ---- Healing actions ----
     async fetchHealingActions(params = {}) {
       try {
         const response = await api.getHealingActions(params)
         const data = response.data || []
         this.healingActions = data.length > 0 ? data : this._fallbackHealingActionsFromSummary()
+        this.healingActionsError = null
       } catch (err) {
         const fallback = this._fallbackHealingActionsFromSummary()
         if (fallback.length > 0) {
           this.healingActions = fallback
+          this.healingActionsError = null
+        } else {
+          this.healingActionsError = 'Failed to fetch healing actions: ' + err.message
         }
       }
     },
@@ -378,19 +453,31 @@ export const useNetworkStore = defineStore('network', {
 
     // ---- Auto-refresh ----
     async refreshAll() {
-      await Promise.all([
-        this.fetchSummary(),
-        this.fetchDevices(),
-        this.fetchTelemetry(),
-        this.fetchIncidents(),
-        this.fetchHealingActions(),
-      ])
-      if (this.latestIncident?.id) {
-        await this.fetchIncidentDetail(this.latestIncident.id)
+      // Guard against overlapping refresh cycles: if a previous
+      // refreshAll() (e.g. a slow telemetry fetch) is still in flight
+      // when the interval fires again, skip this tick instead of
+      // stacking a second concurrent batch of requests that can race
+      // each other and land state updates out of order.
+      if (this.refreshInFlight) return
+      this.refreshInFlight = true
+
+      try {
+        await Promise.all([
+          this.fetchSummary(),
+          this.fetchDevices(),
+          this.fetchTelemetry(),
+          this.fetchIncidents(),
+          this.fetchHealingActions(),
+        ])
+        if (this.latestIncident?.id) {
+          await this.fetchIncidentDetail(this.latestIncident.id)
+        }
+      } finally {
+        this.refreshInFlight = false
       }
     },
 
-    async startAutoRefresh(intervalMs = 2000) {
+    async startAutoRefresh(intervalMs = 10000) {
       this.stopAutoRefresh()
       await this.refreshAll()
       this.refreshInterval = setInterval(() => this.refreshAll(), intervalMs)

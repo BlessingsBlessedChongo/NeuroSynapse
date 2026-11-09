@@ -5,181 +5,266 @@ An AI-powered self-healing network intelligence system implementing the full MAP
 Django REST API, ensemble ML anomaly detection, a reinforcement-learning healing agent, and
 Explainable AI (XAI) diagnosis.
 
-This is the **complete, self-contained project**. It has been fully verified end-to-end in this
-state: clean `migrate`, clean `check`, a full server boot with zero warnings, a real login ->
-device list -> dashboard summary HTTP round trip, a full injected-failure -> detect -> diagnose ->
-auto-heal -> verify -> RL-reward MAPE-K cycle, and a clean shutdown.
+Figure 3.2 state machine (preserved exactly):
+
+```
+MONITORING -> ANOMALY_DETECTED -> MANUAL_REVIEW / READY_FOR_ACTION
+  -> SANDBOXING -> EXECUTION -> VERIFICATION -> HEALED / ROLLBACK
+```
 
 ## Quick start
 
 ```bash
 python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+# Windows:
+venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
 
+pip install -r requirements.txt
 python manage.py migrate
 python manage.py create_admin --username admin --password <your-password> --role SUPER_ADMIN
 python manage.py runserver
 ```
 
-You should see:
+Set `NEUROSYNAPSE_AUTOSTART=False` when running management commands / offline tests so the
+background collector and orchestrator do not start.
 
+## Device targets
+
+| Device type | How it works | Default identity |
+|---|---|---|
+| `simulated` | DB-backed in-memory simulator (original) | `127.0.0.1` / SimRouter |
+| `python_router` | Realistic in-process router (OSPF, multi-vendor ifaces, recovery delay) | `127.0.0.2` / PyRouter-01 |
+| `frr` | Real FRRouting container over SSH (Alpine Linux) | `localhost:2222` admin/admin |
+
+The simulated device is unchanged and remains the default autostart target.
+
+## Live server startup
+
+Run each service in its own terminal from `backend/`:
+
+```bash
+# Terminal 1: Django API
+cd backend
+python manage.py runserver 0.0.0.0:8000
+
+# Terminal 2: telemetry collector
+python manage.py start_collector
+
+# Terminal 3: MAPE-K orchestrator
+python manage.py start_orchestrator
 ```
-[BOOT] NeuroSynapse starting up...
-[BOOT] Starting telemetry collector...
-[SCHEDULER] Collector started.
-[AI ENGINE] Models loaded successfully
-[BOOT] Starting MAPE-K orchestrator...
-[ORCHESTRATOR] Started MAPE-K loop
-[BOOT] System ready
+
+Set `NEUROSYNAPSE_AUTOSTART=True` before starting Django to auto-start the
+background services. Keep it `False` for management commands and offline tests.
+
+## PythonRouter
+
+PythonRouter mirrors a multi-vendor control-plane device without Docker:
+
+```bash
+# Auto-provisions Device(device_type=python_router, ip=127.0.0.2) if missing
+python manage.py inject_failure --device-type python_router --type service_crash --service-name ospfd
+python manage.py inject_failure --device-type python_router --type link_failure --interface eth0
+python manage.py inject_failure --device-type python_router --type ddos_attack --source-ip 10.0.0.99 --destination-port 443 --traffic-volume 75000
 ```
 
-The server auto-starts a simulated device ("SimRouter") and begins polling/healing it
-automatically - no further setup needed to see the system working. Stop with Ctrl+C for a graceful
-shutdown (`[BOOT] Shutting down services...` / `[BOOT] Services stopped`).
+Within one orchestrator cycle the incident transitions:
 
-Set `NEUROSYNAPSE_AUTOSTART=False` as an environment variable to run the dev server without the
-background collector/orchestrator (useful when running management commands that don't need them).
+`ANOMALY_DETECTED -> READY_FOR_ACTION|MANUAL_REVIEW -> SANDBOXING -> EXECUTION -> VERIFICATION -> HEALED`
+
+Verification waits for PythonRouter's realistic recovery timer (up to ~5s).
+
+## FRR Docker (Alpine Linux)
+
+`docker-compose.yml` runs the official `frrouting/frr` image as `neuro-frr` with **two** networks:
+
+- `neurosynapse-net` -> container `eth0` (SSH / management — do **not** inject link_failure here)
+- `frr-lab-net` -> container `eth1` (safe data-plane interface for failure demos)
+
+```bash
+cd backend
+docker compose up -d
+docker compose logs -f frr-router
+# Expect: [OK] SSH daemon running on port 22
+
+python manage.py setup_frr_device
+ssh admin@localhost -p 2222   # password: admin
+```
+
+`frr/init.sh` installs on Alpine: `openssh`, `sudo`, `iproute2`, `iptables`, `openrc`, and
+configures passwordless sudo for `admin` (`NOPASSWD:ALL` in `/etc/sudoers.d/admin`).
+
+### Alpine healing / verification commands
+
+NeuroSynapse never assumes systemd on FRR. Vendor profile + actuator use:
+
+| Failure | Heal | Verify |
+|---|---|---|
+| SERVICE_CRASH | `rc-service frr restart` (fallback: `/etc/init.d/frr`, then `systemctl`) | `rc-service frr status` |
+| LINK_FAILURE | `sudo -n ip link set dev eth1 up` | `ip -br link show eth1` |
+| DDOS_ATTACK | `sudo -n iptables -A INPUT -s {ip} -j DROP` (fallback: blackhole route) | `iptables -C INPUT -s {ip} -j DROP` |
+
+Sanity checks inside the container:
+
+```bash
+docker exec neuro-frr rc-service frr status
+docker exec neuro-frr ip -br link
+docker exec neuro-frr sudo -n true
+docker exec neuro-frr which ip iptables rc-service
+```
+
+Inject against the lab NIC only:
+
+```bash
+python manage.py inject_failure --device-type frr --type link_failure --interface eth1
+```
+
+## Failure injection commands
+
+### Simulated device
+
+```bash
+python manage.py inject_failure --device-type simulated --type service_crash --service-name nginx
+python manage.py inject_failure --device-type simulated --type link_failure --interface ether1
+python manage.py inject_failure --device-type simulated --type ddos --source-ip 10.0.0.99
+```
+
+### PythonRouter
+
+```bash
+python manage.py inject_failure --device-type python_router --type service_crash --service-name ospfd
+python manage.py inject_failure --device-type python_router --type link_failure --interface eth0
+python manage.py inject_failure --device-type python_router --type ddos --source-ip 10.0.0.99
+```
+
+### FRR Docker (Alpine Linux)
+
+```bash
+python manage.py inject_failure --device-type frr --type service_crash --service-name frr
+python manage.py inject_failure --device-type frr --type link_failure --interface eth1
+python manage.py inject_failure --device-type frr --type ddos --source-ip 10.0.0.5
+```
+
+The FRR management interface is `eth0`; use `eth1` for link-failure tests.
+
+`--force-mgmt-interface` exists for advanced use; bringing `eth0` down severs SSH and the MAPE-K
+loop cannot heal it automatically (`docker exec neuro-frr ip link set eth0 up` to recover).
+
+## Real-dataset training (CICIDS 2017 + UNSW-NB15)
+
+Models under `models/` (and mirrored under `backend/models/`, `backend/training/models/`) were
+trained from CICIDS 2017 + UNSW-NB15 with labels mapped to NeuroSynapse failure types and features
+projected onto the canonical 8-signal telemetry vector:
+
+`cpu_usage, memory_usage, packet_loss, latency_ms, bandwidth_util, interface_up_count, ospf_neighbors, error_count`
+
+Reported classifier accuracy: **91.56%** (macro F1 ~0.92, 5-fold CV mean ~0.912).
+
+Retrain / cross-validate:
+
+```bash
+cd backend/training
+python cicids2017/generate_training_data.py
+python train_cross_dataset.py
+python train_ensemble.py
+# Copy resulting .pkl files into ../../models/ (project root) preferred by InferenceEngine
+```
+
+Inference loads from the first path that contains the full ensemble:
+
+1. `<repo>/models/`
+2. `<repo>/backend/models/`
+3. `<repo>/backend/training/models/`
+
+## HITL and confidence
+
+Default confidence threshold is **0.70** (`HealingPolicyConfig.confidence_threshold` /
+`NeuroSynapseOrchestrator.CONFIDENCE_THRESHOLD`).
+
+- Classification confidence >= threshold -> `READY_FOR_ACTION` (auto-heal)
+- Below threshold -> `MANUAL_REVIEW`
+- Approve -> `READY_FOR_ACTION` then execution
+- Reject -> `MONITORING`
+- Manual rollback on `HEALED` -> `ROLLBACK` -> `MONITORING` (device state restored for simulators)
+
+## RL agent
+
+After successful / failed verification the RL agent records rewards and updates the Q-table.
+Validate Objective 5 (>15% improvement) with a fresh (non-persisted) agent:
+
+```bash
+python manage.py validate_rl
+```
+
+## Objective test suite
+
+```bash
+set NEUROSYNAPSE_AUTOSTART=False   # Windows PowerShell: $env:NEUROSYNAPSE_AUTOSTART='False'
+python tests/test_all_objectives.py
+```
+
+Expect `TEST SUMMARY: 28/28 passed` with the real-data models.
+
+PythonRouter MAPE-K / HITL / XAI smoke test:
+
+```bash
+python test_verification_10items.py
+```
 
 ## API overview
 
-All endpoints are under `/api/`. Authenticate first, then pass the token on every subsequent
-request:
+Authenticate, then pass the token:
 
 ```bash
 curl -X POST http://localhost:8000/api/auth/login/ \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"<your-password>"}'
-# -> {"token": "...", "admin": {...}}
-
-curl http://localhost:8000/api/dashboard/summary/ \
-  -H "Authorization: Token <token>"
 ```
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/auth/login/`, `/logout/`, `GET /api/auth/me/` | Token authentication |
-| `GET/POST /api/devices/`, `GET/PATCH/DELETE /api/devices/<id>/` | Device management |
-| `GET/POST /api/telemetry/` | Telemetry ingest/read |
-| `GET /api/dashboard/summary/` | Dashboard overview (devices, incidents, healing, RL) |
-| `GET /api/dashboard/alerts/` | Open incidents |
-| `GET /api/dashboard/incidents/`, `/incidents/<id>/` | Incident list/detail + XAI explanation |
-| `POST /api/dashboard/incidents/<id>/approve/` | Manual approve/reject (HITL), body `{"approved": true|false}` |
+| `POST /api/auth/login/` | Token auth |
+| `GET/POST /api/devices/` | Device management |
+| `GET /api/dashboard/summary/` | Overview |
+| `GET /api/dashboard/incidents/<id>/` | Incident + XAI (`concrete_context`) |
+| `POST /api/dashboard/incidents/<id>/approve/` | HITL approve/reject |
 | `POST /api/dashboard/incidents/<id>/rollback/` | Manual rollback |
-| `GET /api/dashboard/healing-actions/`, `/healing-actions/<id>/` | Healing history + XAI |
-| `GET /api/dashboard/rl-stats/` | RL agent statistics |
-| `GET/PUT /api/dashboard/policy/` | Healing policy thresholds (SUPER_ADMIN to edit) |
-
-## Testing the self-healing loop against the simulator
-
-```bash
-python manage.py inject_sim --type ddos_attack --source-ip 10.0.0.99 --destination-port 443 --traffic-volume 75000
-python manage.py inject_sim --type link_failure --interface ether2
-python manage.py inject_sim --type service_crash --service-name nginx --process-id 4471
-```
-
-Within one poll cycle (~5 seconds), the orchestrator detects, diagnoses, auto-heals (if confidence
-is high enough) or routes to manual review, and updates the RL agent's Q-values. Watch it happen
-live in the `runserver` console output, or poll `/api/dashboard/incidents/`.
+| `GET /api/dashboard/rl-stats/` | RL statistics |
+| `GET/PUT /api/dashboard/policy/` | Confidence / healing policy |
 
 ## Project structure
 
-- `core/` - Django project settings, URL root
-- `authentication/` - token auth, RBAC (`SUPER_ADMIN` / `ADMIN` / `VIEWER`)
-- `monitoring/` - `Device`/`Telemetry`/`Incident` models, vendor profiles (Cisco/MikroTik/
-  Juniper/Huawei/FRR/generic), the simulated device, the telemetry collector, connectors
-- `ai_engine/` - ML inference (anomaly detection + failure classification), the MAPE-K
-  orchestrator, the RL healing agent, the XAI explanation engine
-- `healing/` - the healing actuator (sandbox validation, command execution, rollback)
-- `dashboard/` - the API layer consumed by the frontend (summary, incidents, healing actions,
-  RL stats, policy config)
-- `training/` - offline model training scripts and the trained `.pkl` models
+- `core/` - Django settings
+- `authentication/` - token auth + RBAC
+- `monitoring/` - devices, telemetry, connectors, PythonRouter, vendor profiles, inject_failure
+- `ai_engine/` - inference, orchestrator, RL, XAI
+- `healing/` - actuator (sandbox, execute, verify, rollback)
+- `dashboard/` - REST API for the Vue frontend
+- `training/` - CICIDS/UNSW pipelines and training scripts
+- `frr/` - Alpine FRR container init + daemons config
+- `tests/test_all_objectives.py` - objective validation suite
 
-## Real Hardware Integration - FRRouting (FRR)
+## Troubleshooting
 
-NeuroSynapse can manage a real router instead of the in-memory simulator, using
-[FRRouting](https://frrouting.org/) (FRR) running in Docker. FRR is a production-grade open-source
-routing suite that behaves like an actual Cisco/Juniper router over SSH - so the whole MAPE-K loop
-runs against a real routing daemon rather than a mock. The simulator remains the default and is
-unaffected; FRR is an additional device you register alongside it.
+| Symptom | Fix |
+|---|---|
+| Models not loaded / low accuracy | Ensure `isolation_forest.pkl`, `local_outlier_factor.pkl`, `failure_classifier.pkl`, `scaler.pkl`, `feature_columns.pkl` exist under `models/`. Prefer matching scikit-learn versions (train env vs runtime). |
+| `InconsistentVersionWarning` on load | Align `scikit-learn` in `venv` with the version used to train (currently models pickled with 1.9.x). |
+| inject_failure hits wrong python_router | Prefer `--ip 127.0.0.2` or delete extra rows; command now prefers canonical `127.0.0.2`. |
+| FRR SSH connection refused on 2222 | Wait for init (`apk add` on first boot), check `docker compose logs frr-router`. |
+| `sudo: a password is required` over SSH | Confirm init.sh wrote `/etc/sudoers.d/admin` and healing commands use `sudo -n`. |
+| `systemctl: not found` | Expected on Alpine — use `rc-service` / OpenRC fallbacks already in vendor profiles. |
+| `rc-service frr status` prints `status_of_proc: command not found` | Known FRR Alpine init quirk (Debian helper missing). NeuroSynapse verifies via `pgrep zebra` instead. |
+| `ip: not found` | `iproute2` missing — init.sh should install it; rebuild container. |
+| link_failure on eth0 never heals | You took down the management NIC. Recover with `docker exec neuro-frr ip link set eth0 up` and use `--interface eth1` next time. |
+| Low confidence always MANUAL_REVIEW | Adjust `/api/dashboard/policy/` confidence_threshold (SUPER_ADMIN), or approve in the UI. |
+| validate_rl below 15% | Ensure you run the updated command (fresh agent via `load_policy=False`). Do not compare against a hot Q-table loaded from DB. |
+| Orchestrator interfering with tests | Export `NEUROSYNAPSE_AUTOSTART=False`. |
 
-### 1. Start the FRR container
+## Notes
 
-```bash
-docker compose up -d
-docker compose logs -f frr-router
-# Look for: [OK] SSH daemon running on port 22
-#           [OK] Handing off to FRR's docker-start (foreground)
-```
-
-### 2. Register the FRR device
-
-```bash
-python manage.py setup_frr_device
-```
-
-Creates a `Device` row at `127.0.0.1:2222`, `device_type='frr'`, username/password `admin`/`admin`.
-The orchestrator picks it up automatically on its next poll cycle.
-
-### 3. Test SSH directly
-
-```bash
-ssh admin@localhost -p 2222
-# password: admin
-vtysh -c 'show interface brief'
-cat /proc/loadavg
-free -m
-```
-
-### 4. Exercise the full loop against the real container
-
-```bash
-ssh admin@localhost -p 2222 "sudo vtysh -c 'configure terminal' -c 'interface eth1' -c 'shutdown'"
-# or
-ssh admin@localhost -p 2222 "sudo systemctl stop frr"
-```
-
-Within one poll + orchestrator cycle, the dashboard shows a new incident, followed by an automatic
-healing action that runs the fix command back over SSH.
-
-### Troubleshooting
-
-- **Connection refused on 2222**: the container may still be installing `openssh-server` on first
-  boot; wait ~20-30s and retry, or check `docker compose logs frr-router`.
-- **Authentication failed**: confirm the container's `FRR_PASSWORD` matches the `Device.password`
-  value (`python manage.py shell` -> `Device.objects.get(device_type='frr').password`).
-  `RealNetworkConnector.connect()` catches `NetmikoAuthenticationException` and logs
-  `[REAL CONNECTOR] ...` rather than crashing the collector loop - this is expected, graceful
-  behavior if the FRR container isn't running yet, not a bug.
-- **Timeouts**: a 15-second Netmiko timeout is used; an unreachable container shows up as a single
-  logged warning per poll cycle, never an unhandled exception.
-
-### Known limitation
-
-The `docker-compose.yml`/`frr/*` files are written against FRRouting's documented official Docker
-image conventions but could not be live-tested against an actual Docker daemon in the environment
-these files were produced in. Treat your first `docker compose up -d` as the real verification
-step; the rest of this backend (API, MAPE-K loop, simulator) has been fully live-verified and does
-not depend on FRR being present - `RealNetworkConnector` failures are caught and logged per-device
-without affecting any other device or crashing the collector.
-
-## Notes on this delivery
-
-Two bugs were found and fixed while assembling this complete build from prior incremental
-deliveries, both confirmed live:
-
-1. **Migration history conflict**: `monitoring/migrations/` had accumulated duplicate/conflicting
-   migration files (two different files both named `0004_...`, plus Django-generated merge
-   migrations). This has been cleaned up to a single linear history
-   (`0001` -> `0002` -> `0003` -> `0004_incident_destination_ip_incident_destination_port_and_more`)
-   regenerated fresh from the current model state.
-2. **Broken telemetry collector import**: `monitoring/scheduler.py` imported a function
-   `persist_interface_status` that did not exist in `monitoring/connector.py` (which defined
-   `attach_metrics_to_interface_status` instead) - this silently killed the background telemetry
-   collector on every server start. Fixed by aliasing both names to the same function.
-3. **RL action-space safety issue**: the FRR vendor profile's `LINK_FAILURE` and `DDOS_ATTACK`
-   healing commands each had two entries (the fix command and its literal inverse), while every
-   other vendor has exactly one. Since the RL agent sizes its action space off the number of
-   available commands, this created a real chance of the agent selecting `shutdown` as the
-   "healing" action during an actual link failure. Reduced to one entry each, matching every
-   other vendor.
+1. FRR is optional. Collectors catch SSH failures per-device and never crash the loop.
+2. Rollback-only actions (`UNBLOCK_*`, `CLEAR_*`) remain in vendor profiles for rollback lookup but are excluded from forward RL action selection.
+3. Official FRR images are Alpine-based; all Linux healing paths prefer `rc-service` before `systemctl`.

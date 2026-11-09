@@ -1,8 +1,22 @@
+"""
+Monitoring views for NeuroSynapse.
+
+Exposes:
+    - health_check            GET  /api/health/
+    - telemetry_ingest        GET  /api/telemetry/   (list)
+                              POST /api/telemetry/   (ingest)
+    - DeviceListCreateView    GET  /api/devices/     (list)
+                              POST /api/devices/     (create, admin only)
+    - DeviceDetailView        GET/PUT/PATCH/DELETE /api/devices/<id>/
+    - inject_failure_api      POST /api/inject-failure/  (test-only)
+"""
+
+import json
 import logging
 
+from django.db import connection
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-import json
 
 from rest_framework import generics
 from rest_framework.authentication import TokenAuthentication
@@ -10,94 +24,106 @@ from rest_framework.authentication import TokenAuthentication
 from authentication.permissions import IsNetworkAdministrator
 from monitoring.models import Device, Telemetry
 from monitoring.serializers import DeviceSerializer, TelemetryIngestSerializer
+from monitoring.connector import get_connector
 
 logger = logging.getLogger('neurosynapse.monitoring')
 
 
 def health_check(request):
-    """Simple health-check endpoint."""
+    """
+    Report API, database, and dedicated-model readiness.
+
+    Returns:
+        {
+            "status": "healthy",
+            "system": "NeuroSynapse API",
+            "version": "0.1.0",
+            "models_healthy": bool,
+            "db_ok": bool,
+        }
+    """
+    db_ok = True
+    try:
+        connection.ensure_connection()
+    except Exception:
+        db_ok = False
+
+    try:
+        from ai_engine.model_loader import models_healthy
+        model_status = models_healthy()
+    except Exception:
+        model_status = False
+
     return JsonResponse({
         'status': 'healthy',
         'system': 'NeuroSynapse API',
         'version': '0.1.0',
+        'models_healthy': model_status,
+        'db_ok': db_ok,
     })
 
 
 @csrf_exempt
 def telemetry_ingest(request):
-    """
-    FR1: Telemetry Ingestion.
-    GET  - returns recent telemetry per device (used by lightweight polling clients).
-    POST - ingests one or more telemetry payloads, validated via
-           TelemetryIngestSerializer (Reliability NFR: realistic value bounds).
-    """
-    # ---------- GET: Return telemetry data ----------
+    """GET: Return telemetry for dashboard. POST: Ingest telemetry."""
     if request.method == 'GET':
         data = []
         for device in Device.objects.all():
             records = Telemetry.objects.filter(device=device)\
                         .order_by('-timestamp')[:20]
+
+            device_records = []
+            for t in records:
+                interface_status = t.interface_status or {}
+
+                # Extract metrics from JSON
+                ospf_neighbors = 0
+                error_count = 0
+                if isinstance(interface_status, dict):
+                    metrics = interface_status.get('__metrics__', {})
+                    ospf_neighbors = metrics.get('ospf_neighbors', 0)
+                    error_count = metrics.get('error_count', 0)
+
+                device_records.append({
+                    'timestamp': t.timestamp.isoformat(),
+                    'cpu': t.cpu_usage,
+                    'memory': t.memory_usage,
+                    'packet_loss': t.packet_loss,
+                    'latency_ms': t.latency_ms,
+                    'bandwidth_util': t.bandwidth_util,
+                    'interface_status': interface_status,
+                    'ospf_neighbors': ospf_neighbors,
+                    'error_count': error_count,
+                })
+
             data.append({
                 'device': device.name,
-                'records': [
-                    {
-                        'timestamp': t.timestamp.isoformat(),
-                        'cpu': t.cpu_usage,
-                        'memory': t.memory_usage,
-                        'packet_loss': t.packet_loss,
-                    } for t in records
-                ]
+                'records': device_records,
             })
+
         return JsonResponse({'telemetry': data})
 
-    # ---------- POST: Ingest new telemetry ----------
+    # POST: ingest a single telemetry record.
     if request.method == 'POST':
         try:
-            body = json.loads(request.body)
-        except (json.JSONDecodeError, TypeError):
+            payload = json.loads(request.body or b'{}')
+        except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON body'}, status=400)
 
-        records = body if isinstance(body, list) else [body]
-
-        saved = 0
-        errors = []
-        for index, item in enumerate(records):
-            serializer = TelemetryIngestSerializer(data=item)
-            if not serializer.is_valid():
-                errors.append({'index': index, 'errors': serializer.errors})
-                logger.warning('[TELEMETRY] Rejected invalid payload #%s: %s', index, serializer.errors)
-                continue
-
-            validated = serializer.validated_data
-            device_ip = validated.get('device_ip') or validated.get('ip_address')
-            device = Device.objects.filter(ip_address=device_ip).first()
-            if not device:
-                device = Device.objects.create(
-                    name=validated.get('name') or 'Unknown',
-                    ip_address=device_ip,
-                    status='ONLINE',
-                )
-                logger.info('[TELEMETRY] Auto-registered new device %s (%s)', device.name, device_ip)
-
-            Telemetry.objects.create(
-                device=device,
-                cpu_usage=validated.get('cpu_usage'),
-                memory_usage=validated.get('memory_usage'),
-                packet_loss=validated.get('packet_loss'),
-                latency_ms=validated.get('latency_ms'),
-                bandwidth_util=validated.get('bandwidth_util'),
-                interface_status=validated.get('interface_status'),
-                raw_output=validated.get('raw_output', ''),
+        serializer = TelemetryIngestSerializer(data=payload)
+        if not serializer.is_valid():
+            return JsonResponse(
+                {'error': 'Invalid telemetry payload', 'details': serializer.errors},
+                status=400,
             )
-            saved += 1
 
-        status_code = 200 if saved else 400
-        return JsonResponse(
-            {'status': 'received', 'records': saved, 'errors': errors},
-            status=status_code,
-        )
+        telemetry = serializer.save()
+        return JsonResponse({
+            'status': 'ingested',
+            'telemetry_id': telemetry.id,
+        }, status=201)
 
-    return JsonResponse({'error': 'Method not allowed'}, status=405)
+    return JsonResponse({'error': 'GET or POST required'}, status=405)
 
 
 class DeviceListCreateView(generics.ListCreateAPIView):
@@ -130,25 +156,41 @@ class DeviceDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsNetworkAdministrator]
 
 
-import json
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from monitoring.models import Device
-from monitoring.connector import get_connector
-
 @csrf_exempt
 def inject_failure_api(request):
+    """
+    Test-only endpoint: inject a synthetic failure into the simulated device.
+
+    Body (JSON):
+        {
+            "type": "ddos" | "service_crash" | "link_failure",
+            ...optional context (source_ip, destination_port, etc.)
+        }
+    """
     if request.method != 'POST':
         return JsonResponse({'error': 'POST required'}, status=405)
-    
-    body = json.loads(request.body)
+
+    try:
+        body = json.loads(request.body or b'{}')
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON body'}, status=400)
+
     failure_type = body.get('type')
-    
+    if not failure_type:
+        return JsonResponse({'error': 'Missing required field: type'}, status=400)
+
     device = Device.objects.filter(device_type='simulated').first()
     if not device:
         return JsonResponse({'error': 'No simulated device found'}, status=404)
-    
+
     connector = get_connector(device)
-    result = connector.inject_failure(failure_type, **{k: v for k, v in body.items() if k != 'type'})
-    
+    try:
+        result = connector.inject_failure(
+            failure_type,
+            **{k: v for k, v in body.items() if k != 'type'},
+        )
+    except Exception as exc:
+        logger.exception('[INJECT] Failure injection failed')
+        return JsonResponse({'error': str(exc)}, status=500)
+
     return JsonResponse({'status': 'injected', 'result': result})

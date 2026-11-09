@@ -44,12 +44,43 @@ export function registerUnauthorizedHandler(handler) {
   onUnauthorized = handler
 }
 
+// Guard so multiple simultaneous 401s don't trigger repeated logout calls.
+let isHandlingUnauthorized = false
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401 && onUnauthorized) {
-      onUnauthorized()
+  async (error) => {
+    const status = error.response?.status
+    const config = error.config || {}
+
+    // For blob requests (e.g. log downloads), error bodies arrive as Blobs.
+    // Parse them so downstream consumers can read a real error message.
+    if (config.responseType === 'blob' && error.response?.data instanceof Blob) {
+      try {
+        const text = await error.response.data.text()
+        error.response.data = text ? JSON.parse(text) : {}
+      } catch {
+        // Response wasn't JSON; leave the Blob in place.
+      }
     }
+
+    // Never treat a failed login attempt as a session expiry.
+    const isAuthEndpoint =
+      typeof config.url === 'string' &&
+      (config.url.includes('/api/auth/login/') || config.url.includes('/api/auth/logout/'))
+
+    if (status === 401 && !isAuthEndpoint && onUnauthorized && !isHandlingUnauthorized) {
+      isHandlingUnauthorized = true
+      try {
+        onUnauthorized()
+      } finally {
+        // Release the guard on the next tick so the store has time to react.
+        setTimeout(() => {
+          isHandlingUnauthorized = false
+        }, 1000)
+      }
+    }
+
     return Promise.reject(error)
   },
 )
@@ -113,16 +144,39 @@ export default {
     return api.get(`/api/dashboard/incidents/${incidentId}/`)
   },
 
+  downloadIncidentLog(incidentId) {
+    return api.get(`/api/incidents/${incidentId}/log/`, {
+      responseType: 'blob',
+    })
+  },
+
+  // Approve / reject / rollback run the full MAPE-K execution path
+  // synchronously on the backend (sandbox validation, healing dispatch,
+  // ~2s verification delay, RL reward write, incident log generation).
+  // The default 15s axios timeout can be exceeded on slow disks or under
+  // SQLite lock contention, so these three use a 45s timeout.
   approveIncident(incidentId) {
-    return api.post(`/api/dashboard/incidents/${incidentId}/approve/`, { approved: true })
+    return api.post(
+      `/api/dashboard/incidents/${incidentId}/approve/`,
+      { approved: true },
+      { timeout: 45000 },
+    )
   },
 
   rejectIncident(incidentId) {
-    return api.post(`/api/dashboard/incidents/${incidentId}/approve/`, { approved: false })
+    return api.post(
+      `/api/dashboard/incidents/${incidentId}/approve/`,
+      { approved: false },
+      { timeout: 45000 },
+    )
   },
 
   rollbackIncident(incidentId) {
-    return api.post(`/api/dashboard/incidents/${incidentId}/rollback/`, {})
+    return api.post(
+      `/api/dashboard/incidents/${incidentId}/rollback/`,
+      {},
+      { timeout: 45000 },
+    )
   },
 
   // ---- Healing actions ----

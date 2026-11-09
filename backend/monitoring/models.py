@@ -1,6 +1,5 @@
 from django.db import models
 
-
 class Device(models.Model):
     """Represents a managed network device."""
     DEVICE_TYPES = [
@@ -9,6 +8,8 @@ class Device(models.Model):
         ('juniper_junos', 'Juniper JunOS'),
         ('huawei_vrp', 'Huawei VRP'),
         ('frr', 'FRRouting (FRR)'),
+        ('simulated', 'Simulated Device (DB-backed)'),
+        ('python_router', 'Python Router Simulator'),
         ('generic', 'Generic/Mock Router'),
     ]
     
@@ -78,6 +79,11 @@ class Incident(models.Model):
         ('VERIFICATION', 'Verification'),
         ('HEALED', 'Healed'),
         ('ROLLBACK', 'Rollback'),
+        # Terminal state for manual rollback of a HEALED incident when the
+        # caller wants a distinct audit label from the transient ROLLBACK
+        # transition state. Used by HealingActuator.rollback() so UC-07 can
+        # assert a terminal post-rollback status.
+        ('ROLLED_BACK', 'Rolled Back'),
     ]
 
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='incidents')
@@ -136,9 +142,20 @@ class HealingAction(models.Model):
         ('RESTART_SERVICE', 'Restart Service'),
         ('REROUTE_TRAFFIC', 'Reroute Traffic'),
         ('BLOCK_SOURCE_IP', 'Block Source IP'),
+        ('UNBLOCK_SOURCE_IP', 'Unblock Source IP'),
         ('REBOOT_DEVICE', 'Reboot Device'),
         ('CLEAR_CACHE', 'Clear Cache'),
         ('RATE_LIMIT', 'Rate Limit'),
+        # FRR/Alpine-specific action types (see monitoring/vendor_profiles.py
+        # 'frr' profile healing_commands) -- these were being created via
+        # HealingAction.objects.create() with action_type values not
+        # present here. .objects.create() doesn't call full_clean(), so
+        # this didn't hard-fail, but it silently broke choice-based
+        # validation/display (Django admin filtering, any future
+        # serializer or form that does validate choices) for every FRR
+        # healing action.
+        ('RESTART_FRR_INTERFACE', 'Restart FRR Interface (vtysh)'),
+        ('CLEAR_TRAFFIC_SHAPING', 'Clear Traffic Shaping'),
         ('CUSTOM', 'Custom'),
     ]
 
@@ -168,11 +185,27 @@ class HealingAction(models.Model):
 
 
 class RLReward(models.Model):
-    """Stores reinforcement learning rewards for healing actions."""
-    healing_action = models.OneToOneField(HealingAction, on_delete=models.CASCADE, related_name='reward')
+    """
+    Stores reinforcement learning rewards for healing actions.
+
+    Ordering + index on -created_at keep audit queries (RLStatsView,
+    dashboard recent-rewards panels) fast once the table grows into the
+    tens of thousands of rows.
+    """
+    healing_action = models.OneToOneField(
+        HealingAction,
+        on_delete=models.CASCADE,
+        related_name='reward',
+    )
     reward_value = models.IntegerField(choices=[(1, 'Success'), (-1, 'Failure')])
-    state_context = models.JSONField(blank=True)
+    state_context = models.JSONField(blank=True, default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at']),
+        ]
 
     def __str__(self):
         return f"Reward {self.reward_value} for {self.healing_action}"

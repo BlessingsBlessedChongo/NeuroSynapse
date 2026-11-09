@@ -152,6 +152,9 @@ class XAIEngine:
                 explanation['contributing_factors'].append(
                     f"Check the physical cable and SFP module on interface {interface_name} first"
                 )
+                explanation['concrete_context'] = (
+                    f"Link failure on interface {interface_name}"
+                )
             else:
                 explanation['contributing_factors'].append(
                     "Check physical cables, SFP modules, and switch port LEDs for signs of failure"

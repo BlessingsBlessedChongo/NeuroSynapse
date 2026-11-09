@@ -1,0 +1,55 @@
+(venv) PS C:\Users\Blessings Chongo\NeuroSynapse-v2\backend\training> python train_with_real_data.py
+============================================================
+NEUROSYNAPSE REAL DATA TRAINING
+============================================================
+[INFO] Loading CICIDS 2017 files...
+  Loading: Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv
+  Loading: Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv
+  Loading: Friday-WorkingHours-Morning.pcap_ISCX.csv
+  Loading: Monday-WorkingHours.pcap_ISCX.csv
+  Loading: Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv
+  Loading: Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv
+  Loading: Tuesday-WorkingHours.pcap_ISCX.csv
+  Loading: Wednesday-workingHours.pcap_ISCX.csv
+[INFO] Loaded 2822767 rows from CICIDS
+[INFO] Loading UNSW-NB15 files...
+  Loading: UNSW_NB15_training-set.csv
+  Loading: UNSW_NB15_testing-set.csv
+[INFO] Loaded 0 rows from UNSW-NB15
+
+[INFO] Total samples: 2822767
+[INFO] Label distribution:
+  NORMAL: 2273097 (80.5%)
+  DDOS_ATTACK: 535788 (19.0%)
+  SERVICE_CRASH: 13846 (0.5%)
+  LINK_FAILURE: 36 (0.0%)
+
+[INFO] Training: 2258213 samples
+[INFO] Testing: 564554 samples
+
+[INFO] Training Random Forest classifier...
+
+[RESULT] Accuracy: 98.02%
+
+[RESULT] Classification Report:
+               precision    recall  f1-score   support
+
+  DDOS_ATTACK       0.93      0.98      0.95    107158
+ LINK_FAILURE       1.00      0.14      0.25         7
+       NORMAL       0.99      0.98      0.99    454620
+SERVICE_CRASH       0.99      0.78      0.87      2769
+
+     accuracy                           0.98    564554
+    macro avg       0.98      0.72      0.77    564554
+ weighted avg       0.98      0.98      0.98    564554
+
+[INFO] Running 5-fold cross-validation...
+[RESULT] CV Scores: [0.97146066 0.98772837 0.9696025  0.96433816 0.93579522]
+[RESULT] Mean CV: 96.58% (+/- 3.38%)
+
+[INFO] Saving models to C:\Users\Blessings Chongo\NeuroSynapse-v2\models
+
+============================================================
+TRAINING COMPLETE
+Accuracy: 98.02%
+Models saved to: C:\Users\Blessings Chongo\NeuroSynapse-v2\models

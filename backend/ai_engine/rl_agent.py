@@ -4,8 +4,11 @@ Epsilon-greedy Q-learning with experience replay for healing action selection.
 """
 
 import random
+import logging
 
 from monitoring.models import RLReward, RLPolicy
+
+logger = logging.getLogger('neurosynapse.ai.rl')
 
 
 class SimpleRLAgent:
@@ -24,7 +27,7 @@ class SimpleRLAgent:
     REPLAY_BATCH_SIZE = 8
     TARGET_IMPROVEMENT = 0.15
 
-    def __init__(self, learning_rate=0.1, discount_factor=0.9, epsilon=0.2):
+    def __init__(self, learning_rate=0.1, discount_factor=0.9, epsilon=0.2, load_policy=True):
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
         self.epsilon = epsilon
@@ -34,7 +37,13 @@ class SimpleRLAgent:
         self.replay_buffer = []
         self.episode_count = 0
         self.baseline_performance = 0.5
-        self._load_from_db()
+        self._persist = bool(load_policy)
+        if load_policy:
+            self._load_from_db()
+            # Constructor epsilon wins when the caller explicitly requested a
+            # different exploration rate (e.g. validate_rl baselines).
+            if epsilon is not None:
+                self.epsilon = epsilon
 
     def _parse_tuple_key(self, key):
         if isinstance(key, str) and key.startswith('('):
@@ -66,38 +75,69 @@ class SimpleRLAgent:
                 self.baseline_performance = latest_policy.policy_data.get(
                     'baseline_performance', 0.5
                 )
-                print(f"[RL AGENT] Loaded policy: {latest_policy.policy_name}")
-                print(f"[RL AGENT] Episodes: {self.episode_count}, Epsilon: {self.epsilon}")
+                logger.info("[RL AGENT] Loaded policy: %s", latest_policy.policy_name)
+                logger.info("[RL AGENT] Episodes: %s, Epsilon: %s", self.episode_count, self.epsilon)
         except Exception as e:
-            print(f"[RL AGENT] No existing policy found, starting fresh: {e}")
+            logger.info("[RL AGENT] No existing policy found, starting fresh: %s", e)
 
     def _save_to_db(self):
-        """Save policy to database with retry for SQLite locks."""
+        """
+        Persist the RL policy to the database.
+
+        SQLite (the default dev/test backend) raises OperationalError with
+        "database is locked" when the orchestrator's MAPE-K thread and a
+        request-handling thread write at the same instant. We retry with
+        linear backoff. Any other exception is logged and swallowed —
+        losing one policy snapshot is always preferable to crashing the
+        live healing loop.
+        """
+        if not getattr(self, "_persist", True):
+            return None
+
         import time
-        
+        from django.db import OperationalError
+
+        serializable_q_table = {str(k): v for k, v in self.q_table.items()}
+        serializable_action_counts = {str(k): v for k, v in self.action_counts.items()}
+
+        policy_data = {
+            'q_table': serializable_q_table,
+            'learning_rate': self.learning_rate,
+            'discount_factor': self.discount_factor,
+            'epsilon': self.epsilon,
+            'performance_history': self.performance_history[-200:],
+            'action_counts': serializable_action_counts,
+            'replay_buffer': self.replay_buffer[-self.REPLAY_BUFFER_SIZE:],
+            'baseline_performance': self.baseline_performance,
+        }
+
+        performance_score = self.get_performance()
+
         max_retries = 5
         for attempt in range(max_retries):
             try:
                 policy, created = RLPolicy.objects.update_or_create(
                     policy_name='default_q_learning_policy',
                     defaults={
-                        'policy_data': {
-                            'q_table': {str(k): v for k, v in self.q_table.items()},
-                            'learning_rate': self.learning_rate,
-                            'discount_factor': self.discount_factor,
-                            'epsilon': self.epsilon,
-                            'performance_history': self.performance_history[-200:],
-                        },
-                        'performance_score': self.get_performance(),
+                        'policy_data': policy_data,
+                        'performance_score': performance_score,
                         'training_episodes': self.episode_count,
-                    }
+                    },
                 )
                 return policy
-            except Exception as exc:
+
+            except OperationalError as exc:
                 if 'locked' in str(exc).lower() and attempt < max_retries - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                raise
+                logger.error("[RL AGENT] Policy save failed (OperationalError): %s", exc)
+                return None
+
+            except Exception as exc:
+                logger.error("[RL AGENT] Policy save failed: %s", exc)
+                return None
+
+        return None
 
     def get_q_value(self, failure_type, action_index):
         return self.q_table.get((failure_type, action_index), 0.0)
@@ -113,7 +153,7 @@ class SimpleRLAgent:
         explore = random.random() < self.epsilon
         if explore:
             action = random.randrange(num_actions)
-            print(
+            logger.info(
                 f"[RL AGENT] Exploring: action {action}/{num_actions} "
                 f"(epsilon={self.epsilon:.3f})"
             )
@@ -123,7 +163,7 @@ class SimpleRLAgent:
         max_q = max(q_values)
         best_actions = [i for i, q in enumerate(q_values) if q == max_q]
         action = random.choice(best_actions)
-        print(
+        logger.info(
             f"[RL AGENT] Exploiting: action {action}/{num_actions} "
             f"(Q={max_q:.3f})"
         )
@@ -142,10 +182,10 @@ class SimpleRLAgent:
             self.performance_history.append(1 if reward > 0 else 0)
             self.epsilon = max(0.05, self.epsilon * 0.995)
 
-        print(f"[RL AGENT] Update: {failure_type}, action {action_index}")
-        print(f"  Reward: {reward:+.1f}, Q-value: {current_q:.3f} -> {new_q:.3f}")
+        logger.info("[RL AGENT] Update: %s, action %s", failure_type, action_index)
+        logger.info("  Reward: %+.1f, Q-value: %.3f -> %.3f", reward, current_q, new_q)
         if increment_episode:
-            print(f"  Episode: {self.episode_count}, Epsilon: {self.epsilon:.3f}")
+            logger.info("  Episode: %s, Epsilon: %.3f", self.episode_count, self.epsilon)
 
     def add_experience(self, failure_type, action_index, reward):
         experience = {
@@ -157,13 +197,30 @@ class SimpleRLAgent:
         if len(self.replay_buffer) > self.REPLAY_BUFFER_SIZE:
             self.replay_buffer.pop(0)
 
-    def replay_experiences(self):
-        """Replay a mini-batch from the experience buffer after each loop execution."""
+    def replay_experiences(self, exclude=None):
+        """Reinforce learning from historical experience.
+
+        This is a background process, decoupled from update(). It must
+        never run inside update() itself: replaying a stale experience for
+        the exact (failure_type, action_index) an explicit reward was just
+        applied to would silently overwrite that signal, making single-step
+        feedback non-deterministic (a genuine positive reward could still
+        lower the Q-value). Call this once per orchestrator cycle instead
+        (see NeuroSynapseOrchestrator._knowledge), after any explicit
+        update() calls for that cycle have already landed.
+        """
         if len(self.replay_buffer) < 2:
             return
 
-        batch_size = min(self.REPLAY_BATCH_SIZE, len(self.replay_buffer))
-        batch = random.sample(self.replay_buffer, batch_size)
+        pool = self.replay_buffer
+        if exclude is not None:
+            pool = [item for item in pool
+                    if (item['failure_type'], item['action_index']) != exclude]
+        if not pool:
+            return
+
+        batch_size = min(self.REPLAY_BATCH_SIZE, len(pool))
+        batch = random.sample(pool, batch_size)
         for item in batch:
             self._apply_q_update(
                 item['failure_type'],
@@ -171,11 +228,14 @@ class SimpleRLAgent:
                 item['reward'],
                 increment_episode=False,
             )
+        self._save_to_db()
 
     def update(self, failure_type, action_index, reward):
+        # Deterministic explicit feedback only. No inline replay here — see
+        # replay_experiences() docstring for why that was a bug: it let
+        # random historical noise overwrite the reward just earned.
         self._apply_q_update(failure_type, action_index, reward, increment_episode=True)
         self.add_experience(failure_type, action_index, reward)
-        self.replay_experiences()
         self._save_to_db()
 
     def get_performance(self, window=20):
@@ -234,6 +294,21 @@ class SimpleRLAgent:
         return 0
 
     def record_reward(self, healing_action, success, timed_out=False):
+        """
+        Record a reward for a healing action and update the Q-table.
+
+        The RLReward write is guarded against SQLite contention: the
+        orchestrator's MAPE-K thread and the dashboard's request threads
+        can both hit the same incident at the same moment, and the
+        OneToOneField on healing_action means a duplicate insert also
+        raises IntegrityError. We use update_or_create() with linear
+        backoff and never let a persistence failure roll back the
+        in-memory Q-table update — the learning step is still valid even
+        if the audit row fails to land.
+        """
+        import time
+        from django.db import IntegrityError, OperationalError
+
         if timed_out:
             reward_value = self.REWARD_TIMEOUT
         elif success:
@@ -241,29 +316,65 @@ class SimpleRLAgent:
         else:
             reward_value = self.REWARD_FAILURE
 
-        RLReward.objects.update_or_create(
-            healing_action=healing_action,
-            defaults={
-                'reward_value': int(reward_value),
-                'state_context': {
-                    'failure_type': healing_action.incident.failure_type,
-                    'action_type': healing_action.action_type,
-                    'incident_id': healing_action.incident.id,
-                    'timed_out': timed_out,
-                },
-            },
-        )
-
         failure_type = healing_action.incident.failure_type
         action_index = self._resolve_action_index(healing_action)
-        self.update(failure_type, action_index, reward_value)
 
-        print(f"[RL AGENT] Reward recorded: {reward_value:+.1f}")
-        print(f"[RL AGENT] Current performance: {self.get_performance():.1%}")
-        print(
+        # Capture the Q-value and agent stats immediately before and after
+        # this specific update, so the audit log can show the RL agent's
+        # actual learning step for this healing action -- not just "a
+        # reward was recorded" but exactly what it changed.
+        q_before = self.get_q_value(failure_type, action_index)
+        self.update(failure_type, action_index, reward_value)
+        q_after = self.get_q_value(failure_type, action_index)
+
+        state_context = {
+            'failure_type': failure_type,
+            'action_type': healing_action.action_type,
+            'action_index': action_index,
+            'incident_id': healing_action.incident.id,
+            'timed_out': timed_out,
+            'q_value_before': round(q_before, 4),
+            'q_value_after': round(q_after, 4),
+            'episode_count': self.episode_count,
+            'epsilon': round(self.epsilon, 4),
+            'recent_performance': round(self.get_performance(), 4),
+            'optimization_delta': round(self.get_optimization_delta(), 4),
+        }
+
+        reward = None
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                reward, created = RLReward.objects.update_or_create(
+                    healing_action=healing_action,
+                    defaults={
+                        'reward_value': int(reward_value),
+                        'state_context': state_context,
+                    },
+                )
+                break
+
+            except (OperationalError, IntegrityError) as exc:
+                if 'locked' in str(exc).lower() and attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                logger.error(
+                    "[RL AGENT] Reward save failed after %d attempts: %s",
+                    attempt + 1, exc,
+                )
+                break
+
+            except Exception as exc:
+                logger.error("[RL AGENT] Reward save failed: %s", exc)
+                break
+
+        logger.info("[RL AGENT] Reward recorded: %+.1f", reward_value)
+        logger.info("[RL AGENT] Current performance: %.1f%%", self.get_performance() * 100)
+        logger.info(
             f"[RL AGENT] Optimization delta: {self.get_optimization_delta():+.1%} "
             f"(target: {self.TARGET_IMPROVEMENT:.0%})"
         )
+        return reward
 
 
 rl_agent = SimpleRLAgent()

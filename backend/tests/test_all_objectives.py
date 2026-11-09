@@ -1,14 +1,29 @@
 """
 Complete test suite for all 5 NeuroSynapse objectives.
 Run this file directly to validate all requirements.
+
+Usage:
+    python tests/test_all_objectives.py
 """
+
+# This is a direct-run verification script, not a pytest module. Its helper
+# functions intentionally accept a shared results object rather than fixtures.
+__test__ = False
 
 import os
 import sys
 import time
 import json
 import django
+import warnings
 from datetime import datetime
+
+# Suppress Scikit-learn parallel warnings that are not relevant to test outcomes.
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module="sklearn",
+)
 
 # Setup Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
@@ -27,7 +42,7 @@ class TestResults:
         self.passed = 0
         self.failed = 0
         self.results = []
-    
+
     def record(self, test_name, passed, details=""):
         self.results.append({
             'test': test_name,
@@ -38,7 +53,7 @@ class TestResults:
             self.passed += 1
         else:
             self.failed += 1
-    
+
     def summary(self):
         total = self.passed + self.failed
         print("\n" + "=" * 60)
@@ -73,15 +88,15 @@ def test_objective_1(results):
     print("\n" + "=" * 60)
     print("TESTING OBJECTIVE 1: Anomaly Detection Accuracy")
     print("=" * 60)
-    
+
     if not engine.loaded:
         results.record("Objective 1: Models loaded", False, "Models not found. Run training first.")
         return
-    
+
     results.record("Objective 1: Models loaded", True)
-    
+
     device = get_or_create_device()
-    
+
     test_cases = [
         {'cpu': 28, 'memory': 38, 'packet_loss': 0.1, 'latency': 5, 'bandwidth': 30,
          'interfaces': {'G0/1': {'status': 'up'}, 'G0/2': {'status': 'up'}}, 'expected': 'NORMAL'},
@@ -100,7 +115,7 @@ def test_objective_1(results):
         {'cpu': 98, 'memory': 68, 'packet_loss': 42, 'latency': 240, 'bandwidth': 97,
          'interfaces': {'G0/1': {'status': 'up'}, 'G0/2': {'status': 'up'}}, 'expected': 'DDOS_ATTACK'},
     ]
-    
+
     correct = 0
     for i, tc in enumerate(test_cases):
         telemetry = Telemetry.objects.create(
@@ -112,20 +127,20 @@ def test_objective_1(results):
             bandwidth_util=tc['bandwidth'],
             interface_status=tc['interfaces'],
         )
-        
+
         diagnosis = engine.diagnose(telemetry)
         predicted = diagnosis['failure_type'] if diagnosis['is_anomaly'] else 'NORMAL'
         is_correct = predicted == tc['expected']
         if is_correct:
             correct += 1
-    
+
     accuracy = correct / len(test_cases)
     results.record(
         f"Objective 1: Detection accuracy",
         accuracy >= 0.90,
         f"{accuracy:.1%} ({correct}/{len(test_cases)}), target: 90%"
     )
-    
+
     return accuracy
 
 
@@ -134,9 +149,9 @@ def test_objective_2(results):
     print("\n" + "=" * 60)
     print("TESTING OBJECTIVE 2: Failure Classification")
     print("=" * 60)
-    
+
     device = get_or_create_device()
-    
+
     failure_tests = [
         {'failure': 'SERVICE_CRASH', 'cpu': 95, 'memory': 88, 'packet_loss': 2, 'latency': 50, 'bandwidth': 60,
          'interfaces': {'G0/1': {'status': 'up'}, 'G0/2': {'status': 'up'}}},
@@ -145,7 +160,7 @@ def test_objective_2(results):
         {'failure': 'DDOS_ATTACK', 'cpu': 98, 'memory': 70, 'packet_loss': 35, 'latency': 200, 'bandwidth': 95,
          'interfaces': {'G0/1': {'status': 'up'}, 'G0/2': {'status': 'up'}}},
     ]
-    
+
     all_passed = True
     for test in failure_tests:
         telemetry = Telemetry.objects.create(
@@ -157,20 +172,20 @@ def test_objective_2(results):
             bandwidth_util=test['bandwidth'],
             interface_status=test['interfaces'],
         )
-        
+
         diagnosis = engine.diagnose(telemetry)
         correct = diagnosis['failure_type'] == test['failure']
         has_confidence = diagnosis['classification_confidence'] > 0
-        
+
         if not correct:
             all_passed = False
-        
+
         results.record(
             f"Objective 2: Classify {test['failure']}",
             correct and has_confidence,
             f"Predicted: {diagnosis['failure_type']}, Confidence: {diagnosis['classification_confidence']:.1%}"
         )
-    
+
     return all_passed
 
 
@@ -179,7 +194,7 @@ def test_objective_3(results):
     print("\n" + "=" * 60)
     print("TESTING OBJECTIVE 3: Healing Actions")
     print("=" * 60)
-    
+
     # Check healing policies exist for all failure types
     for failure_type in ['SERVICE_CRASH', 'LINK_FAILURE', 'DDOS_ATTACK']:
         actions = HEALING_POLICIES.get(failure_type, [])
@@ -188,7 +203,7 @@ def test_objective_3(results):
             len(actions) > 0,
             f"{len(actions)} actions defined"
         )
-    
+
     # Test that actuator can select actions
     for failure_type in ['SERVICE_CRASH', 'LINK_FAILURE', 'DDOS_ATTACK']:
         action = actuator.select_action(failure_type)
@@ -197,7 +212,7 @@ def test_objective_3(results):
             action is not None,
             f"Selected: {action['action_type'] if action else 'None'}"
         )
-    
+
     # Test sandbox validation
     safe_command = "restart service nginx"
     safe_result = actuator._validate_in_sandbox(safe_command)
@@ -206,7 +221,7 @@ def test_objective_3(results):
         safe_result,
         f"'{safe_command}' validated"
     )
-    
+
     dangerous_command = "rm -rf /"
     dangerous_result = actuator._validate_in_sandbox(dangerous_command)
     results.record(
@@ -221,9 +236,9 @@ def test_objective_4(results):
     print("\n" + "=" * 60)
     print("TESTING OBJECTIVE 4: Dashboard and XAI")
     print("=" * 60)
-    
+
     device = get_or_create_device()
-    
+
     # Test XAI explanations for each failure type
     for failure_type in ['SERVICE_CRASH', 'LINK_FAILURE', 'DDOS_ATTACK']:
         telemetry = Telemetry.objects.create(
@@ -235,15 +250,15 @@ def test_objective_4(results):
             bandwidth_util=70,
             interface_status={'G0/1': {'status': 'up'}},
         )
-        
+
         explanation = xai_engine.explain_diagnosis(telemetry, failure_type, 0.94)
-        
+
         results.record(
             f"Objective 4: XAI explanation for {failure_type}",
             explanation['summary'] != '' and len(explanation['key_evidence']) > 0,
             f"Summary: {explanation['summary'][:80]}..."
         )
-    
+
     # Test confidence levels
     levels = [
         (0.95, 'Very High'),
@@ -266,14 +281,14 @@ def test_objective_5(results):
     print("\n" + "=" * 60)
     print("TESTING OBJECTIVE 5: RL Learning")
     print("=" * 60)
-    
+
     # Check agent initializes
     results.record(
         "Objective 5: RL agent initializes",
         rl_agent is not None,
         f"Epsilon: {rl_agent.epsilon}, Episodes: {rl_agent.episode_count}"
     )
-    
+
     # Check agent can select actions
     for failure_type in ['SERVICE_CRASH', 'LINK_FAILURE', 'DDOS_ATTACK']:
         num_actions = len(HEALING_POLICIES.get(failure_type, []))
@@ -284,18 +299,47 @@ def test_objective_5(results):
                 0 <= action < num_actions,
                 f"Action {action}/{num_actions}"
             )
-    
-    # Check agent updates Q-values
-    initial_q = rl_agent.get_q_value('SERVICE_CRASH', 0)
-    rl_agent.update('SERVICE_CRASH', 0, 1)  # Positive reward
-    updated_q = rl_agent.get_q_value('SERVICE_CRASH', 0)
-    
+
+    # Verify the Q-learning update rule mathematically.
+    #
+    # SimpleRLAgent uses a direct reward blending rule:
+    #
+    #     Q(s, a) <- Q(s, a) + learning_rate * (reward - Q(s, a))
+    #
+    # There is no bootstrap term because the next state is not modelled.
+    # We compute the expected value after the update and compare it to the
+    # actual value within a small numerical tolerance. This avoids a false
+    # negative when the Q-value has already converged to its ceiling.
+    failure_type = 'SERVICE_CRASH'
+    action_index = 0
+    reward = 1.0
+
+    initial_q = rl_agent.get_q_value(failure_type, action_index)
+    expected_q = initial_q + rl_agent.learning_rate * (reward - initial_q)
+
+    rl_agent.update(failure_type, action_index, reward)
+    updated_q = rl_agent.get_q_value(failure_type, action_index)
+
     results.record(
-        "Objective 5: Q-value updates with positive reward",
-        updated_q > initial_q,
-        f"Q-value: {initial_q:.3f} → {updated_q:.3f}"
+        "Objective 5: Q-value updates according to learning rule",
+        abs(updated_q - expected_q) < 1e-6,
+        f"Q-value: {initial_q:.3f} -> {updated_q:.3f}, expected: {expected_q:.3f}"
     )
-    
+
+    # Confirm a negative reward moves the Q-value in the opposite direction.
+    # We first set the Q-value to a mid-range value so the direction of the
+    # change is unambiguous.
+    rl_agent.set_q_value(failure_type, action_index, 0.5)
+    before_negative = rl_agent.get_q_value(failure_type, action_index)
+    rl_agent.update(failure_type, action_index, -1.0)
+    after_negative = rl_agent.get_q_value(failure_type, action_index)
+
+    results.record(
+        "Objective 5: Q-value decreases with negative reward",
+        after_negative < before_negative,
+        f"Q-value: {before_negative:.3f} -> {after_negative:.3f}"
+    )
+
     # Check reward recording
     device = get_or_create_device()
     incident = Incident.objects.create(
@@ -304,23 +348,23 @@ def test_objective_5(results):
         confidence_score=0.90,
         status='DETECTED',
     )
-    
+
     healing = HealingAction.objects.create(
         incident=incident,
         action_type='RESTART_SERVICE',
         command='restart service nginx',
         status='EXECUTED',
     )
-    
+
     rl_agent.record_reward(healing, success=True)
-    
+
     reward_exists = RLReward.objects.filter(healing_action=healing).exists()
     results.record(
         "Objective 5: Reward recorded in database",
         reward_exists,
         "Reward saved successfully"
     )
-    
+
     # Get stats
     stats = rl_agent.get_stats()
     results.record(
@@ -336,17 +380,17 @@ def run_all_tests():
     print("NEUROSYNAPSE - COMPLETE OBJECTIVE VALIDATION")
     print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
-    
+
     results = TestResults()
-    
+
     test_objective_1(results)
     test_objective_2(results)
     test_objective_3(results)
     test_objective_4(results)
     test_objective_5(results)
-    
+
     all_passed = results.summary()
-    
+
     # Save results to file
     output = {
         'timestamp': datetime.now().isoformat(),
@@ -356,13 +400,13 @@ def run_all_tests():
         'all_passed': all_passed,
         'results': results.results,
     }
-    
+
     os.makedirs('test_results', exist_ok=True)
     with open('test_results/validation_report.json', 'w') as f:
         json.dump(output, f, indent=2)
-    
+
     print(f"\nResults saved to: test_results/validation_report.json")
-    
+
     return all_passed
 
 

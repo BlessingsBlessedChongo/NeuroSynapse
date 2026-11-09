@@ -10,16 +10,16 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'fallback-secret-key')
 
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
-# CORS settings
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,testserver').split(',')
+
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",      # Vue frontend
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
 CORS_ALLOW_CREDENTIALS = True
 
 INSTALLED_APPS = [
-    'corsheaders',          
+    'corsheaders',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -35,12 +35,6 @@ INSTALLED_APPS = [
     'dashboard',
 ]
 
-# ---------------------------------------------------------------------------
-# Django REST Framework
-# Default: token-based auth for the SPA dashboard client, IsAuthenticated by
-# default (individual views loosen/tighten this via RBAC permission classes
-# in authentication.permissions).
-# ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
@@ -52,21 +46,11 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 50,
 }
 
-# ---------------------------------------------------------------------------
-# Security Requirement: 'User passwords shall be hashed using Bcrypt before
-# storage.' BCryptSHA256PasswordHasher is listed first so it becomes the
-# hasher used for all newly-set passwords; the PBKDF2 hasher remains
-# available so Django can still verify/upgrade any pre-existing hashes.
-# ---------------------------------------------------------------------------
 PASSWORD_HASHERS = [
     'django.contrib.auth.hashers.BCryptSHA256PasswordHasher',
     'django.contrib.auth.hashers.PBKDF2PasswordHasher',
 ]
 
-# ---------------------------------------------------------------------------
-# Logging: structured [LEVEL] tag format used throughout the codebase
-# (no emojis, per project convention).
-# ---------------------------------------------------------------------------
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -95,7 +79,7 @@ LOGGING = {
 }
 
 MIDDLEWARE = [
-     'corsheaders.middleware.CorsMiddleware', 
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -125,12 +109,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'core.wsgi.application'
 
+# ============================================================================
+# DATABASE CONFIGURATION — SQLITE WITH CONCURRENCY FIXES
+# ============================================================================
+# The "database is locked" errors occur because SQLite allows only ONE writer
+# at a time. When the orchestrator, RL agent, and dashboard all try to write
+# simultaneously, they collide.
+#
+# Two fixes:
+#   1. timeout=30     → SQLite waits up to 30s for the lock instead of failing
+#   2. WAL mode       → Write-Ahead Logging allows readers and writers to
+#                       coexist without blocking each other
+# ============================================================================
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
-            'timeout': 30,  # Wait up to 30 seconds for lock release
+            'timeout': 30,
+            'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;',
         },
     }
 }
@@ -147,11 +144,4 @@ STATICFILES_DIRS = [BASE_DIR / 'static']
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ---------------------------------------------------------------------------
-# When True (default), running `python manage.py runserver` automatically
-# starts the telemetry collector and MAPE-K orchestrator as background
-# threads (see monitoring/apps.py::MonitoringConfig.ready()). Set to False
-# via the environment to run the dev server without these services, e.g.
-# when driving them manually via `start_collector` / `start_orchestrator`.
-# ---------------------------------------------------------------------------
-NEUROSYNAPSE_AUTOSTART = os.getenv('NEUROSYNAPSE_AUTOSTART', 'True') == 'True'
+NEUROSYNAPSE_AUTOSTART = os.getenv('NEUROSYNAPSE_AUTOSTART', 'False') == 'True'

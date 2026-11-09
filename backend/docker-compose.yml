@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 # NeuroSynapse - FRRouting (FRR) integration
 #
@@ -7,6 +7,19 @@ version: '3.8'
 # Cisco/Juniper/MikroTik device. This replaces the in-memory simulator
 # with an actual routing daemon for end-to-end testing on real hardware
 # semantics, while the simulator remains available as a fallback.
+#
+# TWO NETWORKS, ON PURPOSE:
+#   - neurosynapse-net  -> eth0, carries SSH management traffic
+#                          (host 2222 -> container 22). NEVER target
+#                          this interface with link_failure -- taking
+#                          it down severs the connection NeuroSynapse
+#                          needs to heal it back, so the MAPE-K loop
+#                          can't recover on its own.
+#   - frr-lab-net       -> eth1, a second NIC purely for failure/
+#                          healing demos. Point --interface at this one.
+#
+# After `docker compose up -d`, confirm the interface names with:
+#   docker exec neuro-frr ip -br link
 #
 # Usage:
 #   docker compose up -d
@@ -30,11 +43,17 @@ services:
     environment:
       - FRR_USER=admin
       - FRR_PASSWORD=admin
+      # init.sh binds the management IP to eth0 by default -- leave
+      # this as-is. Failure injection should target eth1 instead.
+      - MGMT_IFACE=eth0
     entrypoint: ["/bin/bash", "/init.sh"]
     restart: unless-stopped
     networks:
-      - neurosynapse-net
+      neurosynapse-net: {}   # -> becomes eth0 (management/SSH, do not touch)
+      frr-lab-net: {}        # -> becomes eth1 (safe to fail/heal)
 
 networks:
   neurosynapse-net:
+    driver: bridge
+  frr-lab-net:
     driver: bridge

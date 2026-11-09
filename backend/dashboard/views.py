@@ -1,17 +1,9 @@
 """
 Dashboard API views.
-
-Provides the backend data and control endpoints required by Objective 4
-(Interactive Dashboard Visualization) and the associated user requirements:
-Real-Time Visibility, Alert Reception, Explainability Access, Healing
-History, Manual Oversight (HITL), and Manual Rollback.
-
-NOTE: The actual visual rendering (charts, color-coded indicators, XAI
-panels) is a frontend concern and is out of scope here; this module only
-supplies the data and actions the frontend will consume.
 """
 
 import logging
+from django.http import FileResponse
 
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
@@ -20,6 +12,7 @@ from rest_framework.authentication import TokenAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.pagination import PageNumberPagination
 
 from authentication.permissions import IsNetworkAdministrator, IsSuperAdministrator
 from monitoring.models import Device, HealingAction, Incident, RLPolicy, Telemetry
@@ -31,10 +24,10 @@ from monitoring.serializers import (
 )
 from dashboard.models import HealingPolicyConfig
 from dashboard.serializers import HealingPolicyConfigSerializer, ManualApprovalSerializer
+from healing.logging_system.healing_logger import incident_log_path, write_incident_log
 
 logger = logging.getLogger('neurosynapse.dashboard')
 
-# Open incidents are those that are NOT in a terminal state
 TERMINAL_STATUSES = ['HEALED', 'ROLLBACK', 'MONITORING']
 OPEN_INCIDENT_STATUSES = [
     'ANOMALY_DETECTED',
@@ -44,6 +37,13 @@ OPEN_INCIDENT_STATUSES = [
     'EXECUTION',
     'VERIFICATION',
 ]
+
+
+class IncidentPagination(PageNumberPagination):
+    """Pagination for incident list."""
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 
 class DashboardSummaryView(APIView):
@@ -118,6 +118,15 @@ class IncidentListView(APIView):
         if device_filter:
             queryset = queryset.filter(device_id=device_filter)
 
+        # Pagination
+        paginator = IncidentPagination()
+        page = paginator.paginate_queryset(queryset, request)
+
+        if page is not None:
+            serializer = IncidentListSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+
+        # Fallback: return all (capped)
         return Response(IncidentListSerializer(queryset[:200], many=True).data)
 
 
@@ -140,6 +149,29 @@ class IncidentDetailView(APIView):
             data['xai_explanation'] = None
 
         return Response(data)
+
+
+class IncidentLogView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        incident = get_object_or_404(Incident, pk=pk)
+        # Always regenerate rather than serving a cached file if one exists.
+        # Manual approve/reject/rollback (see IncidentApprovalView,
+        # ManualRollbackView) change the incident's status and healing
+        # actions after the automated MAPE-K cycle already wrote a log --
+        # if we only wrote on cache-miss, every download after a manual
+        # action would silently serve the stale pre-approval/pre-rollback
+        # version. Generation is cheap (pure Python + one small file
+        # write), so there's no real cost to guaranteeing freshness here.
+        path = write_incident_log(incident)
+        return FileResponse(
+            path.open('rb'),
+            as_attachment=True,
+            filename=path.name,
+            content_type='text/plain',
+        )
 
 
 class HealingActionListView(APIView):
@@ -204,6 +236,7 @@ class ManualApprovalView(APIView):
 
         healing_action = orchestrator.process_manual_approval(pk, approved)
         incident.refresh_from_db()
+        write_incident_log(incident, status=incident.status)
 
         return Response({
             'incident_id': incident.id,
@@ -214,21 +247,12 @@ class ManualApprovalView(APIView):
 
 
 class ManualRollbackView(APIView):
-    """
-    POST /api/dashboard/incidents/<id>/rollback/
-
-    Manual Rollback: admin can roll back any HEALED incident where they
-    disagree with the automated healing action.
-    """
-
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsNetworkAdministrator]
 
     def post(self, request, pk):
         incident = get_object_or_404(Incident, pk=pk)
 
-        # Allow rollback for HEALED incidents (admin disagrees with auto-heal)
-        # Also allow rollback for VERIFICATION-failed incidents
         if incident.status not in ('HEALED', 'ROLLBACK'):
             return Response(
                 {'error': f"Incident #{pk} cannot be rolled back (current: {incident.status}). "
@@ -237,12 +261,33 @@ class ManualRollbackView(APIView):
             )
 
         from healing.actuator import actuator
+        from django.utils import timezone
 
+        # Figure 3.2: HEALED -> ROLLBACK -> MONITORING
+        #
+        # The actuator sets a terminal status of ROLLED_BACK by default
+        # (needed for UC-07). For the API-driven rollback we want the
+        # state machine's MONITORING terminal instead, so we request it
+        # explicitly via the _rollback_target_status attribute.
+        incident.status = 'ROLLBACK'
+        incident.save(update_fields=['status'])
+
+        incident._rollback_target_status = 'MONITORING'
         actuator.rollback(incident)
-        incident.refresh_from_db()
 
-        logger.info('[ROLLBACK] Administrator %s rolled back incident #%s',
-                     request.user.username, pk)
+        # actuator.rollback() already persisted the target status, but be
+        # explicit about resolved_at here in case it was already set.
+        if incident.resolved_at is None:
+            incident.resolved_at = timezone.now()
+            incident.save(update_fields=['resolved_at'])
+
+        incident.refresh_from_db()
+        write_incident_log(incident, status=incident.status)
+
+        logger.info(
+            '[ROLLBACK] Administrator %s rolled back incident #%s -> %s',
+            request.user.username, pk, incident.status,
+        )
 
         return Response({
             'incident_id': incident.id,
