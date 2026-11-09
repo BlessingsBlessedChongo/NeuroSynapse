@@ -21,3 +21,5 @@ ssh_host_key.pub
 # docker-compose.yml should be committed
 # frr/ directory should be committed
 # Dockerfile should be committed
+# CICIDS2017 dataset: public, too large for GitHub
+backend/training/cicids2017/
